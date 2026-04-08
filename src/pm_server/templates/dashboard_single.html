@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ project.display_name or project.name }} — PM Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --bg: #1a1b26; --surface: #24283b; --border: #3b4261;
+    --text: #c0caf5; --text-dim: #565f89; --accent: #7aa2f7;
+    --green: #9ece6a; --red: #f7768e; --yellow: #e0af68; --orange: #ff9e64;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 2rem; }
+  h1 { color: var(--accent); margin-bottom: 0.5rem; }
+  h2 { color: var(--text); font-size: 1.1rem; margin: 1.5rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+  .meta { color: var(--text-dim); margin-bottom: 1.5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+  .card-label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; }
+  .card-value { font-size: 1.8rem; font-weight: bold; margin-top: 0.25rem; }
+  .todo { color: var(--text); } .in-progress { color: var(--accent); }
+  .done { color: var(--green); } .blocked { color: var(--red); } .review { color: var(--yellow); }
+  .phase-bar { background: var(--border); border-radius: 4px; height: 8px; margin-top: 0.5rem; }
+  .phase-fill { background: var(--accent); height: 100%; border-radius: 4px; transition: width 0.3s; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase; }
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
+  .badge-P0 { background: var(--red); color: #fff; }
+  .badge-P1 { background: var(--orange); color: #1a1b26; }
+  .badge-P2 { background: var(--yellow); color: #1a1b26; }
+  .badge-P3 { background: var(--text-dim); color: #fff; }
+  .chart-container { max-width: 600px; margin: 1rem 0; }
+  .risk { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+  .risk-high, .risk-critical { color: var(--red); }
+  .risk-medium { color: var(--yellow); }
+  .risk-low { color: var(--text-dim); }
+  .adr { padding: 0.5rem 0; }
+  .adr-id { color: var(--accent); font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>{{ project.display_name or project.name }}</h1>
+<div class="meta">{{ project.status.value }} &middot; v{{ project.version }} &middot; {{ today }}</div>
+
+<div class="grid">
+  <div class="card"><div class="card-label">Total Tasks</div><div class="card-value">{{ tasks|length }}</div></div>
+  <div class="card"><div class="card-label">Todo</div><div class="card-value todo">{{ status_counts.get('todo', 0) }}</div></div>
+  <div class="card"><div class="card-label">In Progress</div><div class="card-value in-progress">{{ status_counts.get('in_progress', 0) }}</div></div>
+  <div class="card"><div class="card-label">Done</div><div class="card-value done">{{ status_counts.get('done', 0) }}</div></div>
+  <div class="card"><div class="card-label">Blocked</div><div class="card-value blocked">{{ status_counts.get('blocked', 0) }}</div></div>
+</div>
+
+{% if phases %}
+<h2>Phases</h2>
+{% for p in phases %}
+<div class="card" style="margin-bottom:0.5rem">
+  <div style="display:flex;justify-content:space-between">
+    <span>{{ p.name }}</span>
+    <span class="{{ p.status }}">{{ p.done }}/{{ p.total }} ({{ p.pct }}%)</span>
+  </div>
+  <div class="phase-bar"><div class="phase-fill" style="width:{{ p.pct }}%"></div></div>
+  {% if p.target_date != '—' %}<div style="color:var(--text-dim);font-size:0.8rem;margin-top:0.25rem">Target: {{ p.target_date }}</div>{% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if blocked %}
+<h2>Blockers</h2>
+<table>
+  <tr><th>ID</th><th>Title</th><th>Blocked By</th></tr>
+  {% for t in blocked %}
+  <tr><td>{{ t.id }}</td><td>{{ t.title }}</td><td>{{ t.blocked_by|join(', ') or '—' }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Velocity</h2>
+<div class="meta">Average: {{ velocity.average }} tasks/week &middot; Trend: {{ velocity.trend }}</div>
+<div class="chart-container"><canvas id="velocityChart"></canvas></div>
+
+{% if risks %}
+<h2>Risks & Issues</h2>
+{% for r in risks %}
+<div class="risk"><span class="risk-{{ r.get('severity', 'medium') }}">[{{ r.get('severity', 'medium') }}]</span> {{ r.title }}</div>
+{% endfor %}
+{% endif %}
+
+{% if decisions %}
+<h2>Architecture Decisions</h2>
+{% for d in decisions %}
+<div class="adr"><span class="adr-id">{{ d.id }}</span> {{ d.title }} <span style="color:var(--text-dim)">({{ d.status.value }})</span></div>
+{% endfor %}
+{% endif %}
+
+<script>
+const ctx = document.getElementById('velocityChart').getContext('2d');
+new Chart(ctx, {
+  type: 'bar',
+  data: {
+    labels: [{% for w in velocity.weeks %}'{{ w.week_start }}'{% if not loop.last %},{% endif %}{% endfor %}],
+    datasets: [{
+      label: 'Tasks Completed',
+      data: [{% for w in velocity.weeks %}{{ w.completed }}{% if not loop.last %},{% endif %}{% endfor %}],
+      backgroundColor: '#7aa2f7',
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#565f89' }, grid: { color: '#3b4261' } },
+      y: { ticks: { color: '#565f89', stepSize: 1 }, grid: { color: '#3b4261' }, beginAtZero: true }
+    }
+  }
+});
+</script>
+</body>
+</html>
