@@ -33,7 +33,7 @@ GLOBAL_PM_DIR = Path.home() / ".pm"
 
 
 def _yaml_header(filename: str) -> str:
-    return f"# PM Agent - {filename}\n"
+    return f"# PM Server - {filename}\n"
 
 
 def _load_yaml(path: Path) -> dict | list | None:

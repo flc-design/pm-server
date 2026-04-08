@@ -61,7 +61,7 @@ class TestProjectStorage:
     def test_yaml_has_header(self, tmp_pm_path, sample_project):
         save_project(tmp_pm_path, sample_project)
         content = (tmp_pm_path / "project.yaml").read_text()
-        assert content.startswith("# PM Agent - project.yaml")
+        assert content.startswith("# PM Server - project.yaml")
 
 
 class TestTaskStorage:
@@ -218,7 +218,7 @@ class TestRisksAndMilestones:
 
 
 class TestBrokenYaml:
-    def test_broken_yaml_raises_pm_agent_error(self, tmp_pm_path):
+    def test_broken_yaml_raises_pm_server_error(self, tmp_pm_path):
         broken = tmp_pm_path / "project.yaml"
         broken.write_text("name: [invalid\n  yaml: {broken", encoding="utf-8")
         with pytest.raises(PmServerError, match="Failed to parse"):

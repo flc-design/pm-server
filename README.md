@@ -28,7 +28,7 @@ Track tasks, visualize progress, record decisions — all through natural langua
 
 ## Features
 
-- **15 MCP tools** — task CRUD, status, blockers, velocity, dashboard, ADR, and more
+- **16 MCP tools** — task CRUD, status, blockers, velocity, dashboard, ADR, and more
 - **Natural language** — say "進捗は？" or "what's next?" instead of memorizing commands
 - **Zero configuration** — `pip install` + `pm-server install`, then just say "PM初期化して"
 - **Multi-project** — manage all your projects from a global registry with cross-project dashboards
@@ -74,7 +74,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 ---
 
-## MCP Tools (15 tools)
+## MCP Tools (16 tools)
 
 ### Project Management
 
@@ -115,6 +115,12 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 | `pm_discover` | Scan directories for `.pm/` projects and auto-register |
 | `pm_cleanup` | Remove invalid paths from registry |
 | `pm_list` | List all registered projects |
+
+### Maintenance
+
+| Tool | Description |
+|---|---|
+| `pm_update_claudemd` | Update PM Server rules section in CLAUDE.md to latest version |
 
 ---
 
@@ -178,6 +184,7 @@ pm-server serve         # Start MCP server (called by Claude Code automatically)
 pm-server discover .    # Scan for projects with .pm/ directories
 pm-server status        # Show project status from terminal
 pm-server migrate       # Migrate from pm-agent (rename transition)
+pm-server update-claudemd  # Update PM Server rules in CLAUDE.md
 ```
 
 ---
@@ -192,7 +199,7 @@ Claude Code Session
   └── MCP Server (stdio)
         └── pm-server serve
               │
-              ├── server.py    → 15 MCP tools (FastMCP)
+              ├── server.py    → 16 MCP tools (FastMCP)
               ├── models.py    → Pydantic v2 data models
               ├── storage.py   → YAML read/write
               ├── velocity.py  → Velocity calculation & risk detection

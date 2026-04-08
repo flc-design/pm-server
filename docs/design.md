@@ -388,6 +388,13 @@ def pm_cleanup() -> dict:
 @mcp.tool()
 def pm_list() -> list:
     """レジストリに登録された全プロジェクトの一覧と概要を返す。"""
+
+# ─── メンテナンス ───
+
+@mcp.tool()
+def pm_update_claudemd(project_path: str | None = None) -> dict:
+    """CLAUDE.md の PM Server ルールセクションを最新テンプレートに更新。
+    CLAUDE.md がなければ新規作成。マーカーで識別して PM Server セクションのみ置換。"""
 ```
 
 ### 4.2 CLI エントリポイント
@@ -432,6 +439,11 @@ def migrate():
     2. claude mcp add --scope user pm-server -- <path> serve
     3. ~/.pm/registry.yaml の整合性チェック
     4. CLAUDE.md 内の pm-agent 言及を警告"""
+
+@cli.command("update-claudemd")
+@click.option("--all", "all_projects", is_flag=True, help="Update all registered projects.")
+def update_claudemd_cmd(all_projects):
+    """CLAUDE.md の PM Server ルールを最新版に更新。"""
 
 if __name__ == "__main__":
     cli()
@@ -661,7 +673,7 @@ pm-server/                         # ← pm-agent から改名
 │   └── pm_server/                 # ← pm_agent から改名
 │       ├── __init__.py
 │       ├── __main__.py            # CLI (click)
-│       ├── server.py              # FastMCP Server (15ツール)
+│       ├── server.py              # FastMCP Server (16ツール)
 │       ├── models.py              # Pydantic v2 (12モデル, 9 Enum)
 │       ├── storage.py             # YAML CRUD
 │       ├── installer.py           # claude mcp add ラッパー + migrate
@@ -698,7 +710,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pm-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Project management MCP Server for Claude Code — track tasks, visualize progress, manage decisions"
 readme = "README.md"
 license = "MIT"

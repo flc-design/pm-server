@@ -18,6 +18,7 @@ from pm_server.server import (
     pm_risks,
     pm_status,
     pm_tasks,
+    pm_update_claudemd,
     pm_update_task,
     pm_velocity,
 )
@@ -252,6 +253,28 @@ class TestPmVelocity:
         assert "average" in result
         assert "trend" in result
         assert "weeks" in result
+
+
+class TestPmUpdateClaudemd:
+    def test_pm_update_claudemd_creates_new(self, initialized_project):
+        """pm_update_claudemd creates CLAUDE.md when it doesn't exist."""
+        # Remove CLAUDE.md if pm_init created it
+        claude_md = initialized_project / "CLAUDE.md"
+        if claude_md.exists():
+            claude_md.unlink()
+        result = pm_update_claudemd(project_path=str(initialized_project))
+        assert result["status"] == "updated"
+        assert "created" in result["message"]
+        assert claude_md.exists()
+
+    def test_pm_update_claudemd_updates_existing(self, initialized_project):
+        """pm_update_claudemd updates existing CLAUDE.md."""
+        # 初回
+        pm_update_claudemd(project_path=str(initialized_project))
+        # 2回目
+        result = pm_update_claudemd(project_path=str(initialized_project))
+        assert result["status"] == "updated"
+        assert result["after"]["up_to_date"] is True
 
 
 class TestPmDashboard:

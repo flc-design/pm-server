@@ -27,7 +27,7 @@ pm-server/
 │   └── pm_server/
 │       ├── __init__.py
 │       ├── __main__.py       # CLI (click)
-│       ├── server.py          # FastMCP サーバー (15 tools)
+│       ├── server.py          # FastMCP サーバー (16 tools)
 │       ├── models.py          # Pydantic データモデル (12 models, 9 enums)
 │       ├── storage.py         # YAML 読み書き
 │       ├── installer.py       # Claude Code MCP 自動登録

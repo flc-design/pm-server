@@ -68,7 +68,7 @@ def uninstall_mcp() -> str:
         return "claude command not found"
 
     result = subprocess.run(
-        [claude_path, "mcp", "remove", "pm-server"],
+        [claude_path, "mcp", "remove", "pm-server", "--scope", "user"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -81,19 +81,23 @@ def uninstall_mcp() -> str:
 
 def migrate_from_pm_agent():
     """pm-agent から pm-server への移行。"""
+    claude_path = shutil.which("claude")
+    if claude_path is None:
+        print("✗ 'claude' command not found. Install Claude Code first.")
+        return
+
     # 1. 旧 pm-agent の MCP 登録を解除
     try:
         subprocess.run(
-            ["claude", "mcp", "remove", "pm-agent", "--scope", "user"],
+            [claude_path, "mcp", "remove", "pm-agent", "--scope", "user"],
             check=True,
             capture_output=True,
             text=True,
+            timeout=10,
         )
         print("✓ Old pm-agent MCP registration removed")
     except subprocess.CalledProcessError:
         print("  pm-agent was not registered (skipping)")
-    except FileNotFoundError:
-        print("  'claude' command not found (skipping removal)")
 
     # 2. 新 pm-server を登録
     install_mcp()
@@ -116,7 +120,9 @@ def migrate_from_pm_agent():
             claude_md = Path(proj_path) / "CLAUDE.md"
             if claude_md.exists():
                 content = claude_md.read_text()
-                if "pm-agent" in content or "pm_agent" in content:
+                content_lower = content.lower()
+                has_ref = any(kw in content_lower for kw in ("pm-agent", "pm_agent", "pm agent"))
+                if has_ref:
                     print(f"⚠ {claude_md} contains 'pm-agent' references — please update manually")
 
     print("\n✓ Migration complete. Restart Claude Code to activate.")
