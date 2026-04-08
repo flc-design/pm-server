@@ -1,9 +1,8 @@
 # Claude Desktop × Claude Code 開発ワークフロー
 
-**Version**: 2.0.0
+**Version**: 2.1.0
 **Date**: 2026-04-08
 **Author**: Shinichi Nakazato / FLC design co., ltd.
-**実証プロジェクト**: PM Server, Rvim
 
 ---
 
@@ -47,7 +46,7 @@ v2.0 (2026): Code = 設計 + 実装 + 管理（自律開発）
 ### Desktop を使うべき場面
 
 - 「何を作るか」がまだ決まっていない企画段階
-- 複数の選択肢を比較するリサーチ（「Helix vs Zed vs スクラッチ」等）
+- 複数の選択肢を比較するリサーチ
 - プロジェクトに紐づかない抽象的な議論
 - Claude Code の結果を人間がレビューして方針決定する時
 
@@ -94,7 +93,7 @@ project/
 
 **CLAUDE.md に必ず含めるもの:**
 - プロジェクト概要・技術スタック
-- PM Server 自動行動ルール
+- PM Server 自動行動ルール（`pm_init` で自動追記される）
 - Git 規約（ブランチ戦略 + Conventional Commits）
 - コーディング規約
 - 成功指標
@@ -108,7 +107,9 @@ project/
 > docs/architecture.md を読んで、全フェーズのタスクを登録して
 ```
 
-PM Server がタスクを構造化。以降は `pm_next` で自律的に進む。
+`PM初期化して` で `.pm/` ディレクトリの作成と CLAUDE.md への自動行動ルール追記が行われる。
+続けて設計書を読ませてタスクを一括登録させると、PM Server がタスクを構造化。
+以降は `pm_next` で自律的に進む。
 
 ### Step 4: 自律開発サイクル
 
@@ -177,34 +178,13 @@ Claude Code に「docs/prompts/next-task.md を読んで実行して」と言う
 
 ## 5. PM Server 統合
 
-### CLAUDE.md テンプレート
+### CLAUDE.md の自動管理
 
-```markdown
-## PM Server 自動行動ルール（必ず従うこと）
+`pm_init` を実行すると、CLAUDE.md に PM Server 自動行動ルールが自動追記される。
+マーカー（`<!-- pm-server:begin -->` / `<!-- pm-server:end -->`）で囲まれるため、
+他のセクションに影響しない。
 
-### セッション開始時（最初の応答の前に必ず実行）
-1. pm_status を MCP ツールとして実行し、現在の進捗を表示する
-2. pm_next で次に着手すべきタスクを3件表示する
-3. ブロッカーや期限超過があれば警告する
-
-### タスクに着手する前
-1. 該当タスクを pm_update_task で in_progress に変更する
-
-### タスク完了時（コードが動作確認できたら）
-1. pm_update_task で done に変更する
-2. pm_log に完了内容を記録する
-3. 次の推薦タスクを pm_next で表示する
-4. アトミックコミットを作成する
-
-### 設計上の意思決定が発生した時
-1. ユーザーに「ADRとして記録しますか？」と確認する
-2. 承認されたら pm_add_decision で保存する
-
-### コーディングセッション終了時
-1. 進行中のタスクの状態を確認し、必要に応じて更新する
-2. pm_log にセッションの成果を記録する
-3. 未コミットの変更があればコミットする
-```
+PM Server のバージョンアップ後は `pm-server update-claudemd --all` で全プロジェクトのルールを一括更新できる。
 
 ### PM Server チートシート
 
@@ -212,13 +192,14 @@ Claude Code に「docs/prompts/next-task.md を読んで実行して」と言う
 進捗は？              → pm_status
 次にやること           → pm_next
 タスク追加            → pm_add_task
-TASK-001 完了         → pm_update_task
+MYAPP-001 完了        → pm_update_task
 ダッシュボード         → pm_dashboard
 全プロジェクト状態     → pm_dashboard(project_path=None)
 ブロッカー確認         → pm_blockers
 設計決定を記録         → pm_add_decision
 ベロシティ確認         → pm_velocity
 リスク検知            → pm_risks
+CLAUDE.md ルール更新   → pm_update_claudemd
 プロジェクト一覧       → pm_list
 ```
 
@@ -234,7 +215,7 @@ main ─────────────────────────
   ├── feature/xxx ── 機能追加 → squash merge → git branch -D
   ├── fix/xxx ────── バグ修正 → squash merge → git branch -D
   ├── refactor/xxx ─ リファクタ → squash merge → git branch -D
-  └── release/v0.2.0 リリース準備 → merge + tag
+  └── release/vX.Y.Z リリース準備 → merge + tag
 ```
 
 ### ルール
@@ -248,10 +229,11 @@ main ─────────────────────────
 ### コミットメッセージ（Conventional Commits）
 
 ```
-feat: implement visual mode selection (RVIM-039)
-fix: cursor jumps to wrong position after undo (RVIM-042)
-refactor: extract motion computation to separate module
-docs: add plugin development tutorial
+feat: add user authentication endpoint (MYAPP-014)
+fix: rate limiter not resetting on new window (MYAPP-023)
+refactor: extract validation logic to separate module
+docs: add API documentation
+test: add integration tests for auth flow
 chore: update dependencies
 ```
 
@@ -268,14 +250,13 @@ chore: update dependencies
 
 | コマンド | 用途 |
 |---|---|
-| `/pm-init` | PM Server 初期化 + タスク登録 |
 | `/review` | コードレビュー（チェックリスト付き） |
 | `/test` | テスト実行 |
 | `/lint` | リント + フォーマット |
 | `/git-organize` | コミット整理 |
 | `/fix-{issue}` | 特定バグの修正（都度作成） |
 
-### コマンドの基本構造
+### コマンドの基本構造（例: Python プロジェクト）
 
 ```markdown
 # .claude/commands/review.md
@@ -284,10 +265,9 @@ chore: update dependencies
 
 ## チェック項目
 
-1. cargo build --workspace — 0 warnings
-2. cargo test --workspace — 全パス
-3. cargo clippy -- -D warnings — 0 warnings
-4. cargo fmt -- --check — 0 diffs
+1. ruff check src/ — エラーなし
+2. ruff format --check src/ — フォーマット済み
+3. pytest -v — 全テストパス
 
 ## レビュー観点
 
@@ -309,26 +289,12 @@ chore: update dependencies
 ```
 □ 企画・構想（Desktop or Code）
 □ 設計書作成 (docs/architecture.md)
-□ CLAUDE.md 作成（PM ルール + Git 規約 + コーディング規約）
+□ CLAUDE.md 作成（Git 規約 + コーディング規約）
 □ .claude/commands/ に再利用コマンド（review, test, lint）
 □ .gitignore
 □ git init + 初回コミット
-□ Claude Code で PM 初期化: PM初期化して
-□ タスク登録: 設計書を読んで全タスクを登録して
+□ Claude Code で PM 初期化: 「PM初期化して」
+  → .pm/ 作成 + CLAUDE.md に PM ルール自動追記
+□ タスク一括登録: 「設計書を読んで全タスクを登録して」
 □ 開発開始: pm_next → 実装サイクル
 ```
-
----
-
-## 9. 実績
-
-### PM Server (Python / FastMCP)
-- 設計 → 実装 → レビュー → 修正 → 最終レビュー → インストール
-- 115テスト、全レビュー通過
-- 4プロジェクトで実運用中
-
-### Rvim (Rust / 7 crates)
-- 6フェーズ・38タスクを PM Server で管理
-- 483テスト、全指標PASS
-- Vim互換96.1%、起動3ms、6.4MBバイナリ
-- Phase 0→5 を1日で完走
