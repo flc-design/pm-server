@@ -111,10 +111,16 @@ def pm_init(project_path: str | None = None, project_name: str | None = None) ->
     # Register in global registry
     register_project(root, project.name)
 
+    # Ensure CLAUDE.md has PM Server rules
+    from .claudemd import ensure_claudemd
+
+    claudemd_result = ensure_claudemd(root)
+
     return {
         "status": "initialized",
         "path": str(root),
         "project": project.model_dump(mode="json"),
+        "claudemd": claudemd_result,
     }
 
 
@@ -141,6 +147,11 @@ def pm_status(project_path: str | None = None) -> dict:
     # Blockers
     blockers = [_task_summary(t) for t in tasks if t.status == TaskStatus.BLOCKED]
 
+    # CLAUDE.md status
+    from .claudemd import get_claudemd_status
+
+    root = resolve_project_path(project_path)
+
     return {
         "project": {
             "name": project.name,
@@ -155,6 +166,7 @@ def pm_status(project_path: str | None = None) -> dict:
         "phases": phase_info,
         "blockers": blockers,
         "health": project.health.model_dump(),
+        "claudemd": get_claudemd_status(root),
     }
 
 
@@ -442,7 +454,7 @@ def _has_pm_dir() -> bool:
 
 
 @mcp.tool()
-def pm_discover(scan_path: str = "~") -> dict:
+def pm_discover(scan_path: str = ".") -> dict:
     """Scan for projects with .pm/ directories and register them."""
     found = discover_projects(Path(scan_path))
     newly_registered = []
@@ -485,6 +497,30 @@ def pm_cleanup() -> dict:
         "valid": len(valid),
         "removed": len(invalid),
         "invalid_entries": invalid,
+    }
+
+
+@mcp.tool()
+def pm_update_claudemd(project_path: str | None = None) -> dict:
+    """Update the PM Server rules section in CLAUDE.md to the latest version.
+
+    Creates CLAUDE.md if it doesn't exist.
+    Uses markers to identify and replace only the PM Server section.
+    Other content in CLAUDE.md is preserved.
+    """
+    from .claudemd import TEMPLATE_VERSION, get_claudemd_status, update_claudemd
+
+    root = resolve_project_path(project_path)
+    before = get_claudemd_status(root)
+    message = update_claudemd(root)
+    after = get_claudemd_status(root)
+
+    return {
+        "status": "updated",
+        "message": message,
+        "template_version": TEMPLATE_VERSION,
+        "before": before,
+        "after": after,
     }
 
 

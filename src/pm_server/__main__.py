@@ -100,5 +100,43 @@ def migrate():
     migrate_from_pm_agent()
 
 
+@cli.command("update-claudemd")
+@click.option("--all", "all_projects", is_flag=True, help="Update all registered projects.")
+def update_claudemd_cmd(all_projects: bool):
+    """Update PM Server rules in CLAUDE.md.
+
+    Without --all: updates current project only.
+    With --all: updates all registered projects.
+    """
+    from pathlib import Path
+
+    from .claudemd import update_claudemd
+
+    if all_projects:
+        from .storage import load_registry
+
+        registry = load_registry()
+        if not registry.projects:
+            click.echo("No registered projects found.")
+            return
+
+        for entry in registry.projects:
+            root = Path(entry.path)
+            if root.exists():
+                result = update_claudemd(root)
+                click.echo(f"  {entry.name}: {result}")
+            else:
+                click.echo(f"  {entry.name}: path not found (skipped)")
+    else:
+        from .utils import resolve_project_path
+
+        try:
+            root = resolve_project_path()
+            result = update_claudemd(root)
+            click.echo(f"  {result}")
+        except Exception as e:
+            click.echo(f"Error: {e}")
+
+
 if __name__ == "__main__":
     cli()
