@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0] - 2026-04-08
+
+### Added
+- CLAUDE.md auto-management: `pm_init` automatically adds PM Server rules with version markers
+- `pm_update_claudemd` MCP tool (16th tool) for updating PM Server rules section
+- `pm-server update-claudemd` CLI command with `--all` flag for batch updates
+- `claudemd.py` module with marker-based section management
+
+### Fixed
+- storage.py YAML header showing "PM Agent" instead of "PM Server"
+- dashboard_portfolio.html title showing old name
+- pm_discover MCP tool default scan path changed from "~" to "." (security)
+- uninstall_mcp() missing --scope user flag
+- migrate_from_pm_agent() now uses shutil.which() and timeout
+- Case-insensitive detection of "PM Agent" references in migrate command
+- `PmAgentError` renamed to `PmServerError`
+
+### Changed
+- Removed internal development prompts from docs/
+- Added `.claude/` and `.pm/` to .gitignore
+- pyproject.toml: added classifiers and dev extras
+- MCP tool count: 15 → 16
+
 ## [0.2.0] - 2026-04-08
 
 ### Changed
@@ -10,19 +33,6 @@
 ### Added
 - `README.ja.md` — Japanese README
 - `migrate` CLI command for pm-agent → pm-server transition
-- pyproject.toml classifiers for PyPI
-- `[project.optional-dependencies]` dev section
-- CLAUDE.md auto-management: `pm_init` automatically adds PM Server rules to CLAUDE.md
-- `pm_update_claudemd` MCP tool for updating PM Server rules section
-- `pm-server update-claudemd` CLI command with `--all` flag for batch updates
-
-### Fixed
-- storage.py YAML header still showing "PM Agent" instead of "PM Server"
-- dashboard_portfolio.html title showing old name
-- pm_discover MCP tool default scan path changed from "~" to "." (security)
-- uninstall_mcp() missing --scope user flag
-- migrate_from_pm_agent() now uses shutil.which() and timeout for safety
-- Case-insensitive detection of "PM Agent" references in migrate command
 
 ## [0.1.0] - 2026-04-07
 
