@@ -33,3 +33,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code (local dev config)
+.claude/
+
+# PM Server data (local project management)
+.pm/

@@ -10,6 +10,16 @@
 ### Added
 - `README.ja.md` — Japanese README
 - `migrate` CLI command for pm-agent → pm-server transition
+- pyproject.toml classifiers for PyPI
+- `[project.optional-dependencies]` dev section
+
+### Fixed
+- storage.py YAML header still showing "PM Agent" instead of "PM Server"
+- dashboard_portfolio.html title showing old name
+- pm_discover MCP tool default scan path changed from "~" to "." (security)
+- uninstall_mcp() missing --scope user flag
+- migrate_from_pm_agent() now uses shutil.which() and timeout for safety
+- Case-insensitive detection of "PM Agent" references in migrate command
 
 ## [0.1.0] - 2026-04-07
 

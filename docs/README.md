@@ -1,4 +1,4 @@
-# PM Agent Documentation
+# PM Server Documentation
 
 - [design.md](./design.md) — 設計書（アーキテクチャ、データモデル、MCP API）
-- [implementation-prompt.md](./implementation-prompt.md) — Claude Code 実装プロンプト
+- [workflow.md](./workflow.md) — Claude Code 開発ワークフロー
