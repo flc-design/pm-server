@@ -42,7 +42,7 @@
 ### インストール（初回のみ）
 
 ```bash
-pip install git+https://github.com/flc-design/pm-server.git
+pip install pm-server
 pm-server install       # Claude Code に MCP サーバーを登録
 # Claude Code を再起動
 ```
@@ -220,7 +220,7 @@ Claude Code Session
 
 ```bash
 pip uninstall pm-agent
-pip install git+https://github.com/flc-design/pm-server.git
+pip install pm-server
 pm-server migrate       # MCP 登録を pm-agent → pm-server に切り替え
 # Claude Code を再起動
 ```

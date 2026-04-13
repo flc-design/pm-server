@@ -42,7 +42,7 @@ Track tasks, visualize progress, record decisions — all through natural langua
 ### Install (once)
 
 ```bash
-pip install git+https://github.com/flc-design/pm-server.git
+pip install pm-server
 pm-server install       # Registers MCP server in Claude Code
 # Restart Claude Code
 ```
@@ -220,7 +220,7 @@ If you were using the earlier `pm-agent` package:
 
 ```bash
 pip uninstall pm-agent
-pip install git+https://github.com/flc-design/pm-server.git
+pip install pm-server
 pm-server migrate       # Switches MCP registration from pm-agent to pm-server
 # Restart Claude Code
 ```
