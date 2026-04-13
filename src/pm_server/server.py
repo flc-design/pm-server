@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from . import storage as _storage
 from .discovery import detect_project_info, discover_projects
 from .memory import MemoryStore
 from .models import (
@@ -70,7 +71,8 @@ def _get_memory_store(project_path: str | None) -> MemoryStore:
     pm_path = _get_pm_path(project_path)
     key = str(pm_path)
     if key not in _memory_stores:
-        _memory_stores[key] = MemoryStore(pm_path / "memory.db")
+        global_db_path = _storage.GLOBAL_PM_DIR / "memory.db"
+        _memory_stores[key] = MemoryStore(pm_path / "memory.db", global_db_path=global_db_path)
     return _memory_stores[key]
 
 
