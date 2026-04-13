@@ -8,6 +8,7 @@ FTS5 full-text search support with unicode61 tokenizer.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -42,6 +43,31 @@ def _json_to_list(s: str | None) -> list[str]:
         return json.loads(s)
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+# ─── FTS5 query helpers ──────────────────────────
+
+_FTS5_SPECIAL_RE = re.compile(r"[-:]")
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Sanitize a user query for safe FTS5 MATCH usage.
+
+    Wraps tokens that contain hyphens or colons in double quotes
+    so FTS5 does not misinterpret them as column-filter syntax
+    (e.g. ``pm-server`` → ``"pm-server"``).  Already-quoted phrases
+    are preserved as-is.
+    """
+    parts: list[str] = []
+    for m in re.finditer(r'"[^"]*"|\S+', query):
+        token = m.group()
+        if token.startswith('"'):
+            parts.append(token)
+        elif _FTS5_SPECIAL_RE.search(token):
+            parts.append(f'"{token}"')
+        else:
+            parts.append(token)
+    return " ".join(parts)
 
 
 # ─── Schema SQL ─────────────────────────────────────
@@ -154,7 +180,7 @@ class MemoryStore:
         self.db_path = db_path
         self.global_db_path = global_db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._ensure_schema()
 
@@ -212,13 +238,14 @@ class MemoryStore:
             type: Filter by memory type.
             limit: Maximum results.
         """
+        safe_query = _sanitize_fts_query(query)
         rows = self._conn.execute(
             """SELECT m.* FROM memories m
                JOIN memories_fts f ON m.id = f.rowid
                WHERE memories_fts MATCH ?
                ORDER BY rank
                LIMIT ?""",
-            (query, limit),
+            (safe_query, limit),
         ).fetchall()
 
         memories = [self._row_to_memory(r) for r in rows]
@@ -459,13 +486,14 @@ class MemoryStore:
         try:
             conn = sqlite3.connect(str(self.global_db_path))
             conn.row_factory = sqlite3.Row
+            safe_query = _sanitize_fts_query(query)
             rows = conn.execute(
                 """SELECT m.* FROM memory_index m
                    JOIN memory_index_fts f ON m.id = f.rowid
                    WHERE memory_index_fts MATCH ?
                    ORDER BY rank
                    LIMIT ?""",
-                (query, limit),
+                (safe_query, limit),
             ).fetchall()
             conn.close()
             return [

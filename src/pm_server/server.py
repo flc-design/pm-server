@@ -428,6 +428,8 @@ def pm_recall(
     if query is None and task_id is None:
         summary = store.get_latest_summary()
         recent = store.get_recent(limit=limit)
+        if type:
+            recent = [m for m in recent if m.type.value == type]
         return {
             "last_session": {
                 "session_id": summary.session_id,

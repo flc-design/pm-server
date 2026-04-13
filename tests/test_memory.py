@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pm_server.memory import MemoryStore, _str_to_tags, _tags_to_str
+from pm_server.memory import MemoryStore, _sanitize_fts_query, _str_to_tags, _tags_to_str
 from pm_server.models import Memory, MemoryType, SessionSummary
 
 # ─── Tag conversion helpers ────────────────────────────
@@ -35,6 +35,33 @@ class TestTagConversion:
     def test_roundtrip(self):
         tags = ["memory", "sqlite", "fts5"]
         assert _str_to_tags(_tags_to_str(tags)) == tags
+
+
+# ─── FTS5 query sanitization ─────────────────────────────
+
+
+class TestSanitizeFtsQuery:
+    def test_plain_words_unchanged(self):
+        assert _sanitize_fts_query("memory search") == "memory search"
+
+    def test_hyphenated_word_quoted(self):
+        assert _sanitize_fts_query("pm-server") == '"pm-server"'
+
+    def test_colon_word_quoted(self):
+        assert _sanitize_fts_query("col:value") == '"col:value"'
+
+    def test_already_quoted_preserved(self):
+        assert _sanitize_fts_query('"exact phrase"') == '"exact phrase"'
+
+    def test_mixed_tokens(self):
+        result = _sanitize_fts_query('memory "exact phrase" pm-server')
+        assert result == 'memory "exact phrase" "pm-server"'
+
+    def test_empty_query(self):
+        assert _sanitize_fts_query("") == ""
+
+    def test_multiple_hyphens(self):
+        assert _sanitize_fts_query("a-b-c") == '"a-b-c"'
 
 
 # ─── MemoryStore initialization ────────────────────────
@@ -200,6 +227,24 @@ class TestFTS5Search:
         results = memory_store.search("認証")
         assert len(results) >= 1
         assert any("認証" in r.content for r in results)
+
+    def test_search_hyphenated_term(self, memory_store: MemoryStore):
+        """Hyphenated terms must not crash FTS5 with column-filter error."""
+        mem = Memory(
+            session_id="sess-hyp",
+            content="Deployed pm-server to staging environment",
+            tags=["deploy"],
+            project="testproj",
+        )
+        memory_store.save(mem)
+        results = memory_store.search("pm-server")
+        assert len(results) >= 1
+        assert any("pm-server" in r.content for r in results)
+
+    def test_search_hyphenated_no_match(self, memory_store: MemoryStore):
+        """Hyphenated term that doesn't match should return empty, not error."""
+        results = memory_store.search("no-such-term")
+        assert len(results) == 0
 
     def test_search_japanese_tags(self, memory_store: MemoryStore):
         mem = Memory(
@@ -403,6 +448,17 @@ class TestServerToolIntegration:
         assert "last_session" in result
         assert "recent_memories" in result
         assert len(result["recent_memories"]) >= 1
+
+    def test_recall_default_with_type_filter(self):
+        from pm_server.server import pm_recall, pm_remember
+
+        pm_remember(content="An observation", type="observation")
+        pm_remember(content="A lesson learned", type="lesson")
+        pm_remember(content="An insight gained", type="insight")
+
+        result = pm_recall(type="lesson")
+        assert all(m["type"] == "lesson" for m in result["recent_memories"])
+        assert len(result["recent_memories"]) == 1
 
     def test_recall_by_task_id(self):
         from pm_server.server import pm_recall, pm_remember
