@@ -39,3 +39,6 @@ Thumbs.db
 
 # PM Server data (local project management)
 .pm/
+
+# Synaptic Ledger (local knowledge data)
+.synaptic/

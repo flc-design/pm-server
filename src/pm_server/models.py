@@ -85,6 +85,14 @@ class LogCategory(StrEnum):
     MILESTONE = "milestone"
 
 
+class MemoryType(StrEnum):
+    """Memory observation type."""
+
+    OBSERVATION = "observation"
+    INSIGHT = "insight"
+    LESSON = "lesson"
+
+
 # ─── Exceptions ──────────────────────────────────────
 
 
@@ -230,3 +238,34 @@ class Registry(BaseModel):
     """Root model for ~/.pm/registry.yaml."""
 
     projects: list[RegistryEntry] = Field(default_factory=list)
+
+
+# ─── Memory Layer Models ───────────���────────────
+
+
+class Memory(BaseModel):
+    """A single memory entry stored in SQLite."""
+
+    id: int | None = None
+    session_id: str
+    type: MemoryType = MemoryType.OBSERVATION
+    content: str
+    task_id: str | None = None
+    decision_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    created_at: str = ""
+    project: str = ""
+
+
+class SessionSummary(BaseModel):
+    """Session summary for cross-session continuity."""
+
+    id: int | None = None
+    session_id: str
+    summary: str
+    goals: str = ""
+    tasks_done: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    pending: list[str] = Field(default_factory=list)
+    created_at: str = ""
+    project: str = ""

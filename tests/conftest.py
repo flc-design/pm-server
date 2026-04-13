@@ -118,6 +118,21 @@ def sample_tasks() -> list[Task]:
 
 
 @pytest.fixture
+def memory_store(tmp_path: Path):
+    """Create a MemoryStore backed by a temp database.
+
+    Global sync is pointed at a temp directory to avoid touching ~/.pm/.
+    """
+    from pm_server.memory import MemoryStore
+
+    db_path = tmp_path / "test_memory.db"
+    global_path = tmp_path / "global_pm" / "memory.db"
+    store = MemoryStore(db_path, global_db_path=global_path)
+    yield store
+    store.close()
+
+
+@pytest.fixture
 def sample_decision() -> Decision:
     return Decision(
         id="ADR-001",
