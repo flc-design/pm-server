@@ -3,22 +3,27 @@
 from __future__ import annotations
 
 import datetime as _dt
+import uuid
 from pathlib import Path
 
 from fastmcp import FastMCP
 
 from .discovery import detect_project_info, discover_projects
+from .memory import MemoryStore
 from .models import (
     Consequences,
     DailyLogEntry,
     Decision,
     LogCategory,
+    Memory,
+    MemoryType,
     PhaseStatus,
     Priority,
     Project,
     ProjectNotFoundError,
     ProjectStatus,
     RiskStatus,
+    SessionSummary,
     Task,
     TaskStatus,
 )
@@ -48,6 +53,25 @@ from .utils import (
 from .velocity import calculate_velocity, detect_risks
 
 mcp = FastMCP("pm-server")
+
+# ─── Session ID (one per server process = one per Claude Code session) ───
+
+_current_session_id: str = (
+    f"sess-{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+)
+
+# ─── Memory store cache (lazy init per project) ─────
+
+_memory_stores: dict[str, MemoryStore] = {}
+
+
+def _get_memory_store(project_path: str | None) -> MemoryStore:
+    """Get or create a MemoryStore for the project."""
+    pm_path = _get_pm_path(project_path)
+    key = str(pm_path)
+    if key not in _memory_stores:
+        _memory_stores[key] = MemoryStore(pm_path / "memory.db")
+    return _memory_stores[key]
 
 
 # ─── Helpers ─────────────────────────────────────────
@@ -317,6 +341,296 @@ def pm_blockers(project_path: str | None = None) -> list:
         }
         for t in blocked
     ]
+
+
+# ─── Memory ──────────────────────────────────────────
+
+
+@mcp.tool()
+def pm_remember(
+    content: str,
+    type: str = "observation",
+    task_id: str | None = None,
+    decision_id: str | None = None,
+    tags: str | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """Save a memory tied to the current session context.
+
+    Memories are searchable and persist across sessions.
+    Link to task_id or decision_id for structured context.
+    type: observation | insight | lesson
+    tags: comma-separated string (e.g. "auth,api,refactor")
+    """
+    store = _get_memory_store(project_path)
+    pm_path = _get_pm_path(project_path)
+    project = load_project(pm_path)
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    memory = Memory(
+        session_id=_current_session_id,
+        type=MemoryType(type),
+        content=content,
+        task_id=task_id,
+        decision_id=decision_id,
+        tags=tag_list,
+        project=project.name,
+    )
+    memory_id = store.save(memory)
+    return {
+        "status": "saved",
+        "memory_id": memory_id,
+        "session_id": _current_session_id,
+        "type": type,
+    }
+
+
+@mcp.tool()
+def pm_recall(
+    query: str | None = None,
+    task_id: str | None = None,
+    type: str | None = None,
+    limit: int = 5,
+    cross_project: bool = False,
+    project_path: str | None = None,
+) -> dict:
+    """Recall memories relevant to the current context.
+
+    With no arguments: returns last session summary + recent memories.
+    With query: full-text search (FTS5).
+    With task_id: memories linked to that task.
+    type filter: observation | insight | lesson
+    cross_project: search across all projects (Phase 3).
+    """
+    if cross_project:
+        store = _get_memory_store(project_path)
+        if not query:
+            return {"status": "error", "message": "query is required for cross_project search"}
+        results = store.search_global(query, limit=limit)
+        return {"query": query, "cross_project": True, "results": results}
+
+    store = _get_memory_store(project_path)
+
+    def _memory_dict(m: Memory) -> dict:
+        return {
+            "id": m.id,
+            "type": m.type.value,
+            "content": m.content,
+            "task_id": m.task_id,
+            "decision_id": m.decision_id,
+            "tags": m.tags,
+            "created_at": m.created_at,
+            "session_id": m.session_id,
+        }
+
+    # Default: last session summary + recent memories
+    if query is None and task_id is None:
+        summary = store.get_latest_summary()
+        recent = store.get_recent(limit=limit)
+        return {
+            "last_session": {
+                "session_id": summary.session_id,
+                "summary": summary.summary,
+                "goals": summary.goals,
+                "pending": summary.pending,
+                "created_at": summary.created_at,
+            }
+            if summary
+            else None,
+            "recent_memories": [_memory_dict(m) for m in recent],
+        }
+
+    # Search by query
+    if query:
+        results = store.search(query, type=type, limit=limit)
+        return {"query": query, "results": [_memory_dict(m) for m in results]}
+
+    # Search by task_id
+    if task_id:
+        results = store.get_by_task(task_id)
+        if type:
+            results = [m for m in results if m.type.value == type]
+        return {"task_id": task_id, "results": [_memory_dict(m) for m in results[:limit]]}
+
+    return {"results": []}
+
+
+@mcp.tool()
+def pm_session_summary(
+    action: str = "save",
+    summary: str | None = None,
+    goals: str | None = None,
+    pending: str | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """Manage session summaries for cross-session continuity.
+
+    action:
+      - save: Store a summary for the current session (summary required)
+      - get: Retrieve the most recent session summary
+      - list: Show all session summaries
+    """
+    store = _get_memory_store(project_path)
+
+    match action:
+        case "save":
+            if not summary:
+                return {"status": "error", "message": "summary is required for save action"}
+            pm_path = _get_pm_path(project_path)
+            project = load_project(pm_path)
+            pending_list = [p.strip() for p in pending.split(",") if p.strip()] if pending else []
+            sess = SessionSummary(
+                session_id=_current_session_id,
+                summary=summary,
+                goals=goals or "",
+                pending=pending_list,
+                project=project.name,
+            )
+            summary_id = store.save_session_summary(sess)
+            return {
+                "status": "saved",
+                "summary_id": summary_id,
+                "session_id": _current_session_id,
+            }
+
+        case "get":
+            latest = store.get_latest_summary()
+            if latest is None:
+                return {"status": "empty", "message": "No session summaries found"}
+            return {
+                "session_id": latest.session_id,
+                "summary": latest.summary,
+                "goals": latest.goals,
+                "tasks_done": latest.tasks_done,
+                "decisions": latest.decisions,
+                "pending": latest.pending,
+                "created_at": latest.created_at,
+            }
+
+        case "list":
+            summaries = store.list_summaries(limit=10)
+            return {
+                "count": len(summaries),
+                "summaries": [
+                    {
+                        "session_id": s.session_id,
+                        "summary": s.summary[:100] + ("..." if len(s.summary) > 100 else ""),
+                        "created_at": s.created_at,
+                    }
+                    for s in summaries
+                ],
+            }
+
+        case _:
+            return {"status": "error", "message": f"Unknown action: {action}. Use save/get/list"}
+
+
+@mcp.tool()
+def pm_memory_search(
+    query: str,
+    type: str | None = None,
+    tags: str | None = None,
+    task_id: str | None = None,
+    limit: int = 10,
+    cross_project: bool = False,
+    project_path: str | None = None,
+) -> dict:
+    """Advanced memory search with multiple filters.
+
+    query: Full-text search query (required).
+    type: Filter by memory type (observation | insight | lesson).
+    tags: Comma-separated tags for AND filtering.
+    task_id: Filter by associated task.
+    cross_project: Search across all projects.
+    """
+    store = _get_memory_store(project_path)
+
+    if cross_project:
+        results = store.search_global(query, limit=limit)
+        if tags:
+            tag_set = {t.strip() for t in tags.split(",") if t.strip()}
+            results = [r for r in results if tag_set.issubset(set(r.get("tags", [])))]
+        return {"query": query, "cross_project": True, "results": results[:limit]}
+
+    results = store.search(query, type=type, limit=limit * 2)
+
+    # Apply additional filters
+    if tags:
+        tag_set = {t.strip() for t in tags.split(",") if t.strip()}
+        results = [m for m in results if tag_set.issubset(set(m.tags))]
+    if task_id:
+        results = [m for m in results if m.task_id == task_id]
+
+    def _result_dict(m: Memory) -> dict:
+        return {
+            "id": m.id,
+            "type": m.type.value,
+            "content": m.content,
+            "task_id": m.task_id,
+            "decision_id": m.decision_id,
+            "tags": m.tags,
+            "created_at": m.created_at,
+            "session_id": m.session_id,
+        }
+
+    return {
+        "query": query,
+        "filters": {"type": type, "tags": tags, "task_id": task_id},
+        "results": [_result_dict(m) for m in results[:limit]],
+    }
+
+
+# ─── Memory Operations ──────────────────────────────
+
+
+@mcp.tool()
+def pm_memory_stats(project_path: str | None = None) -> dict:
+    """Show memory statistics for the current project.
+
+    Returns total count, breakdown by type, session count,
+    summary count, date range, and DB size.
+    """
+    store = _get_memory_store(project_path)
+    stats = store.get_stats()
+
+    # Add human-readable DB size
+    size = stats["db_size_bytes"]
+    if size < 1024:
+        stats["db_size"] = f"{size} B"
+    elif size < 1024 * 1024:
+        stats["db_size"] = f"{size / 1024:.1f} KB"
+    else:
+        stats["db_size"] = f"{size / (1024 * 1024):.1f} MB"
+
+    return stats
+
+
+@mcp.tool()
+def pm_memory_cleanup(
+    older_than_days: int | None = None,
+    keep_latest: int | None = None,
+    session_id: str | None = None,
+    dry_run: bool = True,
+    project_path: str | None = None,
+) -> dict:
+    """Clean up old memories.
+
+    Specify at least one criterion:
+      older_than_days: Delete memories older than N days.
+      keep_latest: Keep only the latest N memories, delete rest.
+      session_id: Delete all memories from a specific session.
+
+    dry_run (default True): Preview what would be deleted without deleting.
+    Set dry_run=False to actually delete.
+    """
+    store = _get_memory_store(project_path)
+    return store.cleanup(
+        older_than_days=older_than_days,
+        keep_latest=keep_latest,
+        session_id=session_id,
+        dry_run=dry_run,
+    )
 
 
 # ─── Recording ───────────────────────────────────────

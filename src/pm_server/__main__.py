@@ -100,6 +100,19 @@ def migrate():
     migrate_from_pm_agent()
 
 
+@cli.command("context-inject")
+def context_inject_cmd():
+    """Print session context to stdout for Claude Code injection.
+
+    Outputs a context block with previous session summary,
+    in-progress task memories, recent decisions, and recent memories.
+    Designed for future SessionStart hook integration.
+    """
+    from .context import inject_context
+
+    inject_context()
+
+
 @cli.command("update-claudemd")
 @click.option("--all", "all_projects", is_flag=True, help="Update all registered projects.")
 def update_claudemd_cmd(all_projects: bool):

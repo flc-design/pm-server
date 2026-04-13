@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-TEMPLATE_VERSION = 1
+TEMPLATE_VERSION = 2
 BEGIN_MARKER = "<!-- pm-server:begin v={version} -->"
 END_MARKER = "<!-- pm-server:end -->"
 BEGIN_PATTERN = re.compile(r"<!-- pm-server:begin v=(\d+) -->")
@@ -21,10 +21,14 @@ CLAUDEMD_TEMPLATE = """\
 ### セッション開始時（最初の応答の前に必ず実行）
 1. pm_status を MCP ツールとして実行し、現在の進捗を表示する
 2. pm_next で次に着手すべきタスクを3件表示する
-3. ブロッカーや期限超過があれば警告する
+3. pm_recall で前回セッションの文脈を取得する
+4. ブロッカーや期限超過があれば警告する
 
 ### タスクに着手する前
 1. 該当タスクを pm_update_task で in_progress に変更する
+
+### 作業中に重要な発見・判断があった時
+1. pm_remember で記憶を保存する（関連タスクIDがあれば task_id で紐付け）
 
 ### タスク完了時（コードが動作確認できたら）
 1. pm_update_task で done に変更する
@@ -39,7 +43,8 @@ CLAUDEMD_TEMPLATE = """\
 ### コーディングセッション終了時
 1. 進行中のタスクの状態を確認し、必要に応じて更新する
 2. pm_log にセッションの成果を記録する
-3. 未コミットの変更があればコミットする
+3. pm_session_summary で要約を保存する
+4. 未コミットの変更があればコミットする
 <!-- pm-server:end -->"""
 
 

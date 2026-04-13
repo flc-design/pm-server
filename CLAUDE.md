@@ -27,9 +27,13 @@ pm-server/
 │   └── pm_server/
 │       ├── __init__.py
 │       ├── __main__.py       # CLI (click)
-│       ├── server.py          # FastMCP サーバー (16 tools)
-│       ├── models.py          # Pydantic データモデル (12 models, 9 enums)
+│       ├── server.py          # FastMCP サーバー (22 tools)
+│       ├── models.py          # Pydantic データモデル (14 models, 10 enums)
 │       ├── storage.py         # YAML 読み書き
+│       ├── memory.py          # SQLite メモリストア + FTS5 検索
+│       ├── recall.py          # セッションコンテキスト構築
+│       ├── context.py         # CLI コンテキスト注入
+│       ├── claudemd.py        # CLAUDE.md テンプレート管理
 │       ├── installer.py       # Claude Code MCP 自動登録
 │       ├── discovery.py       # プロジェクト自動検出・情報推定
 │       ├── dashboard.py       # HTML/テキスト ダッシュボード生成
@@ -48,10 +52,15 @@ pm-server/
 │   ├── test_installer.py
 │   ├── test_discovery.py
 │   ├── test_dashboard.py
-│   └── test_velocity.py
+│   ├── test_velocity.py
+│   ├── test_memory.py
+│   ├── test_recall.py
+│   ├── test_context.py
+│   └── test_memory_ops.py
 └── docs/
     ├── design.md
-    └── implementation-prompt.md
+    ├── memory-layer-design.md
+    └── memory-layer-prompt.md
 ```
 
 ## コーディング規約
@@ -102,3 +111,50 @@ pm-server/
 - ❌ settings.json を丸ごと上書き → ✅ 必要なキーのみ追加
 - ❌ project_path を必須引数にする → ✅ オプションにして自動検出
 - ❌ タスクIDをユーザーに手入力させる → ✅ 自動採番
+
+<!-- pm-server:begin v=1 -->
+## PM Server 自動行動ルール（必ず従うこと）
+
+### セッション開始時（最初の応答の前に必ず実行）
+1. pm_status を MCP ツールとして実行し、現在の進捗を表示する
+2. pm_next で次に着手すべきタスクを3件表示する
+3. ブロッカーや期限超過があれば警告する
+
+### タスクに着手する前
+1. 該当タスクを pm_update_task で in_progress に変更する
+
+### タスク完了時（コードが動作確認できたら）
+1. pm_update_task で done に変更する
+2. pm_log に完了内容を記録する
+3. 次の推薦タスクを pm_next で表示する
+4. アトミックコミットを作成する
+
+### 設計上の意思決定が発生した時
+1. ユーザーに「ADRとして記録しますか？」と確認する
+2. 承認されたら pm_add_decision で保存する
+
+### コーディングセッション終了時
+1. 進行中のタスクの状態を確認し、必要に応じて更新する
+2. pm_log にセッションの成果を記録する
+3. 未コミットの変更があればコミットする
+<!-- pm-server:end -->
+
+<!-- synaptic-ledger:begin v=1 -->
+## Synaptic Ledger 自動行動ルール
+
+### 知識の記録
+- 重要なパターン・解決策を発見したら `synaptic_add` で記録する
+- セッション中の作業メモは `synaptic_remember` で素早くキャプチャ
+
+### セッション管理
+- 作業開始時: `synaptic_session_start` でゴールを設定
+- 判断・タスクの記録: `synaptic_session_log`
+- Compaction後の復元: `synaptic_session_restore`
+
+### 検索・想起
+- コンテキストが必要なら `synaptic_recall` で取得
+- 詳細な多面検索は `synaptic_multisearch` を使用
+
+### キュレーション
+- 重要な知識は `synaptic_curate` で品質検証してから保存
+<!-- synaptic-ledger:end -->
