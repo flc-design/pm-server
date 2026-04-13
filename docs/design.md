@@ -6,7 +6,7 @@
 **Status**: Implemented (リネーム移行中)
 **License**: MIT
 **PyPI**: `pm-server` (予定)
-**GitHub**: `github.com/code-retriever/pm-server`
+**GitHub**: `github.com/flc-design/pm-server`
 
 ---
 
@@ -738,9 +738,9 @@ dependencies = [
 pm-server = "pm_server.__main__:cli"
 
 [project.urls]
-Homepage = "https://github.com/code-retriever/pm-server"
-Repository = "https://github.com/code-retriever/pm-server"
-Issues = "https://github.com/code-retriever/pm-server/issues"
+Homepage = "https://github.com/flc-design/pm-server"
+Repository = "https://github.com/flc-design/pm-server"
+Issues = "https://github.com/flc-design/pm-server/issues"
 ```
 
 ---
@@ -759,7 +759,7 @@ Issues = "https://github.com/code-retriever/pm-server/issues"
 - [ ] パッケージリネーム（pm_agent → pm_server）
 - [ ] migrate コマンド実装
 - [ ] Git コミット整理
-- [ ] GitHub リポジトリ push（github.com/code-retriever/pm-server）
+- [ ] GitHub リポジトリ push（github.com/flc-design/pm-server）
 - [ ] `.github/workflows/test.yml` (pytest CI)
 - [ ] PyPI 公開
 
@@ -772,7 +772,7 @@ Issues = "https://github.com/code-retriever/pm-server/issues"
 | ディレクトリ | `src/pm_agent/` | `src/pm_server/` |
 | pyproject.toml name | `pm-agent` | `pm-server` |
 | pyproject.toml scripts | `pm-agent = "pm_agent.__main__:cli"` | `pm-server = "pm_server.__main__:cli"` |
-| pyproject.toml URLs | `nakashin/pm-agent` | `code-retriever/pm-server` |
+| pyproject.toml URLs | `nakashin/pm-agent` | `flc-design/pm-server` |
 | 全 import 文 | `from pm_agent` / `import pm_agent` | `from pm_server` / `import pm_server` |
 | server.py FastMCP 名 | `FastMCP("pm-agent")` | `FastMCP("pm-server")` |
 | テスト内参照 | `pm_agent` | `pm_server` |

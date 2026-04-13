@@ -27,7 +27,7 @@
 
 ### Changed
 - Package renamed from `pm-agent` to `pm-server` (PyPI name conflict with existing `PMAgent`)
-- GitHub repository moved to `code-retriever/pm-server`
+- GitHub repository moved to `flc-design/pm-server`
 - Added `pm-server migrate` command for transitioning from pm-agent
 
 ### Added
