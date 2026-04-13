@@ -28,7 +28,9 @@ Track tasks, visualize progress, record decisions — all through natural langua
 
 ## Features
 
-- **16 MCP tools** — task CRUD, status, blockers, velocity, dashboard, ADR, and more
+- **22 MCP tools** — task CRUD, status, blockers, velocity, dashboard, ADR, session memory, and more
+- **Session memory** — SQLite + FTS5 full-text search. Memories persist across sessions and link to tasks/decisions
+- **Cross-project search** — search memories across all projects via a global index
 - **Natural language** — say "進捗は？" or "what's next?" instead of memorizing commands
 - **Zero configuration** — `pip install` + `pm-server install`, then just say "PM初期化して"
 - **Multi-project** — manage all your projects from a global registry with cross-project dashboards
@@ -74,7 +76,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 ---
 
-## MCP Tools (16 tools)
+## MCP Tools (22 tools)
 
 ### Project Management
 
@@ -116,6 +118,17 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 | `pm_cleanup` | Remove invalid paths from registry |
 | `pm_list` | List all registered projects |
 
+### Memory (Session Continuity)
+
+| Tool | Description |
+|---|---|
+| `pm_remember` | Save a memory tied to the current session (observation / insight / lesson) |
+| `pm_recall` | Recall memories — FTS5 search, by task, or cross-project |
+| `pm_session_summary` | Save / get / list session summaries for continuity |
+| `pm_memory_search` | Advanced search with type, tag, and task filters |
+| `pm_memory_stats` | Memory DB statistics (total, by type, DB size) |
+| `pm_memory_cleanup` | Clean up old memories (dry-run supported) |
+
 ### Maintenance
 
 | Tool | Description |
@@ -126,7 +139,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 ## Data Structure
 
-pm-server stores everything as plain YAML in a `.pm/` directory at your project root:
+pm-server stores task data as plain YAML and memories in SQLite:
 
 ```
 your-project/
@@ -136,41 +149,53 @@ your-project/
     ├── decisions.yaml      # Architecture Decision Records (ADR)
     ├── milestones.yaml     # Milestone definitions
     ├── risks.yaml          # Risks and blockers
+    ├── memory.db           # Session memories (SQLite + FTS5)
     └── daily/
         └── 2026-04-08.yaml # Auto-generated daily log
+
+~/.pm/
+├── registry.yaml           # Global project index
+└── memory.db               # Cross-project memory index
 ```
 
-Global registry at `~/.pm/registry.yaml` indexes all projects.
-
-All files are human-readable and hand-editable. If something goes wrong, you can fix it with a text editor.
+YAML files are human-readable and hand-editable. Memory DB is the source of truth for session data; the global index at `~/.pm/memory.db` enables cross-project search.
 
 ---
 
 ## CLAUDE.md Integration
 
-Add this to your project's `CLAUDE.md` for automatic PM behavior:
+Add this to your project's `CLAUDE.md` for automatic PM behavior (or run `pm-server update-claudemd`):
 
 ```markdown
-## PM Server — Auto-actions (always follow these)
+## PM Server 自動行動ルール（必ず従うこと）
 
-### On session start (before first response)
-1. Run pm_status to show current progress
-2. Run pm_next to show top 3 recommended tasks
-3. Warn about blockers or overdue tasks
+### セッション開始時（最初の応答の前に必ず実行）
+1. pm_status を MCP ツールとして実行し、現在の進捗を表示する
+2. pm_next で次に着手すべきタスクを3件表示する
+3. pm_recall で前回セッションの文脈を取得する
+4. ブロッカーや期限超過があれば警告する
 
-### Before starting a task
-1. Run pm_update_task to set status to in_progress
+### タスクに着手する前
+1. 該当タスクを pm_update_task で in_progress に変更する
 
-### On task completion
-1. Run pm_update_task to set status to done
-2. Run pm_log to record what was completed
-3. Run pm_next to show next recommendations
-4. Create an atomic git commit
+### 作業中に重要な発見・判断があった時
+1. pm_remember で記憶を保存する（関連タスクIDがあれば task_id で紐付け）
 
-### On session end
-1. Update any in-progress task status
-2. Run pm_log to record session results
-3. Commit any uncommitted changes
+### タスク完了時（コードが動作確認できたら）
+1. pm_update_task で done に変更する
+2. pm_log に完了内容を記録する
+3. 次の推薦タスクを pm_next で表示する
+4. アトミックコミットを作成する
+
+### 設計上の意思決定が発生した時
+1. ユーザーに「ADRとして記録しますか？」と確認する
+2. 承認されたら pm_add_decision で保存する
+
+### コーディングセッション終了時
+1. 進行中のタスクの状態を確認し、必要に応じて更新する
+2. pm_log にセッションの成果を記録する
+3. pm_session_summary で要約を保存する
+4. 未コミットの変更があればコミットする
 ```
 
 ---
@@ -178,12 +203,13 @@ Add this to your project's `CLAUDE.md` for automatic PM behavior:
 ## CLI Commands
 
 ```bash
-pm-server install       # Register MCP server in Claude Code
-pm-server uninstall     # Unregister MCP server
-pm-server serve         # Start MCP server (called by Claude Code automatically)
-pm-server discover .    # Scan for projects with .pm/ directories
-pm-server status        # Show project status from terminal
-pm-server migrate       # Migrate from pm-agent (rename transition)
+pm-server install          # Register MCP server in Claude Code
+pm-server uninstall        # Unregister MCP server
+pm-server serve            # Start MCP server (called by Claude Code automatically)
+pm-server discover .       # Scan for projects with .pm/ directories
+pm-server status           # Show project status from terminal
+pm-server context-inject   # Print session context to stdout (for hook integration)
+pm-server migrate          # Migrate from pm-agent (rename transition)
 pm-server update-claudemd  # Update PM Server rules in CLAUDE.md
 ```
 
@@ -199,17 +225,20 @@ Claude Code Session
   └── MCP Server (stdio)
         └── pm-server serve
               │
-              ├── server.py    → 16 MCP tools (FastMCP)
+              ├── server.py    → 22 MCP tools (FastMCP)
               ├── models.py    → Pydantic v2 data models
               ├── storage.py   → YAML read/write
+              ├── memory.py    → SQLite memory store + FTS5 search
+              ├── recall.py    → Session context builder (token-budgeted)
+              ├── context.py   → CLI context injection
               ├── velocity.py  → Velocity calculation & risk detection
               ├── dashboard.py → HTML/text dashboard (Jinja2)
               ├── discovery.py → Auto-detect project info
               └── installer.py → claude mcp add wrapper
                     │
-                    ├── project-A/.pm/
-                    ├── project-B/.pm/
-                    └── ~/.pm/registry.yaml
+                    ├── project-A/.pm/ (YAML + memory.db)
+                    ├── project-B/.pm/ (YAML + memory.db)
+                    └── ~/.pm/registry.yaml + memory.db
 ```
 
 ---
@@ -256,7 +285,7 @@ Your `.pm/` data directories are **unchanged** — no data migration needed.
 git clone https://github.com/flc-design/pm-server.git
 cd pm-server
 pip install -e ".[dev]"
-pytest                  # 115 tests
+pytest                  # 237 tests
 ruff check src/         # Lint
 ruff format src/        # Format
 ```

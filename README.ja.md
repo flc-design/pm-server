@@ -28,7 +28,9 @@
 
 ## 特徴
 
-- **16の MCP ツール** — タスク CRUD、ステータス、ブロッカー、ベロシティ、ダッシュボード、ADR 等
+- **22の MCP ツール** — タスク CRUD、ステータス、ブロッカー、ベロシティ、ダッシュボード、ADR、セッションメモリ等
+- **セッションメモリ** — SQLite + FTS5 全文検索。記憶はセッションを跨いで永続化し、タスク・決定に紐付け可能
+- **横断検索** — グローバルインデックスを使って全プロジェクトの記憶を横断検索
 - **自然言語で操作** — 「進捗は？」「次にやること」と言うだけ
 - **ゼロ設定** — `pip install` + `pm-server install` で完了。あとは「PM初期化して」と言うだけ
 - **マルチプロジェクト** — グローバルレジストリで全プロジェクトを横断管理
@@ -74,7 +76,7 @@ pm-server install       # Claude Code に MCP サーバーを登録
 
 ---
 
-## MCP ツール一覧（16ツール）
+## MCP ツール一覧（22ツール）
 
 ### プロジェクト管理
 
@@ -116,6 +118,17 @@ pm-server install       # Claude Code に MCP サーバーを登録
 | `pm_cleanup` | レジストリの無効パスを除去 |
 | `pm_list` | 登録プロジェクト一覧 |
 
+### メモリ（セッション継続）
+
+| ツール | 説明 |
+|---|---|
+| `pm_remember` | セッションに紐付く記憶を保存（observation / insight / lesson） |
+| `pm_recall` | 記憶を呼び出し — FTS5 検索、タスク別、横断検索に対応 |
+| `pm_session_summary` | セッション要約の保存・取得・一覧 |
+| `pm_memory_search` | type・tag・task_id フィルター付き高度な検索 |
+| `pm_memory_stats` | メモリ DB の統計情報（件数・種別・DB サイズ） |
+| `pm_memory_cleanup` | 古い記憶のクリーンアップ（dry-run 対応） |
+
 ### メンテナンス
 
 | ツール | 説明 |
@@ -126,7 +139,7 @@ pm-server install       # Claude Code に MCP サーバーを登録
 
 ## データ構造
 
-`.pm/` ディレクトリにプレーン YAML で保存:
+タスクデータはプレーン YAML、記憶は SQLite で保存:
 
 ```
 your-project/
@@ -136,41 +149,53 @@ your-project/
     ├── decisions.yaml      # ADR (Architecture Decision Records)
     ├── milestones.yaml     # マイルストーン定義
     ├── risks.yaml          # リスク・ブロッカー
+    ├── memory.db           # セッション記憶（SQLite + FTS5）
     └── daily/
         └── 2026-04-08.yaml # 日次ログ（自動生成）
+
+~/.pm/
+├── registry.yaml           # グローバルプロジェクトインデックス
+└── memory.db               # 横断検索用メモリインデックス
 ```
 
-`~/.pm/registry.yaml` が全プロジェクトのグローバルインデックスです。
-
-すべてのファイルは人間が読め、手動編集しても壊れません。
+YAML ファイルは人間が読め、手動編集しても壊れません。メモリ DB はセッションデータの正本で、`~/.pm/memory.db` が横断検索を可能にします。
 
 ---
 
 ## CLAUDE.md 統合
 
-プロジェクトの `CLAUDE.md` に以下を追加すると、セッション中の PM 操作が自動化されます:
+プロジェクトの `CLAUDE.md` に以下を追加すると、セッション中の PM 操作が自動化されます（`pm-server update-claudemd` で自動追加も可能）:
 
 ```markdown
 ## PM Server 自動行動ルール（必ず従うこと）
 
 ### セッション開始時（最初の応答の前に必ず実行）
-1. pm_status でプロジェクトの現在の進捗を表示する
+1. pm_status を MCP ツールとして実行し、現在の進捗を表示する
 2. pm_next で次に着手すべきタスクを3件表示する
-3. ブロッカーや期限超過があれば警告する
+3. pm_recall で前回セッションの文脈を取得する
+4. ブロッカーや期限超過があれば警告する
 
 ### タスクに着手する前
-1. pm_update_task で該当タスクを in_progress に変更する
+1. 該当タスクを pm_update_task で in_progress に変更する
+
+### 作業中に重要な発見・判断があった時
+1. pm_remember で記憶を保存する（関連タスクIDがあれば task_id で紐付け）
 
 ### タスク完了時（コードが動作確認できたら）
 1. pm_update_task で done に変更する
 2. pm_log に完了内容を記録する
-3. pm_next で次の推薦タスクを表示する
+3. 次の推薦タスクを pm_next で表示する
 4. アトミックコミットを作成する
+
+### 設計上の意思決定が発生した時
+1. ユーザーに「ADRとして記録しますか？」と確認する
+2. 承認されたら pm_add_decision で保存する
 
 ### コーディングセッション終了時
 1. 進行中のタスクの状態を確認し、必要に応じて更新する
 2. pm_log にセッションの成果を記録する
-3. 未コミットの変更があればコミットする
+3. pm_session_summary で要約を保存する
+4. 未コミットの変更があればコミットする
 ```
 
 ---
@@ -178,12 +203,13 @@ your-project/
 ## CLI コマンド
 
 ```bash
-pm-server install       # Claude Code に MCP サーバーを登録
-pm-server uninstall     # MCP サーバー登録を解除
-pm-server serve         # MCP Server 起動（Claude Code が自動で呼び出す）
-pm-server discover .    # .pm/ を持つプロジェクトをスキャン
-pm-server status        # ターミナルからステータス確認
-pm-server migrate       # pm-agent からの移行（MCP 登録の切り替え）
+pm-server install          # Claude Code に MCP サーバーを登録
+pm-server uninstall        # MCP サーバー登録を解除
+pm-server serve            # MCP Server 起動（Claude Code が自動で呼び出す）
+pm-server discover .       # .pm/ を持つプロジェクトをスキャン
+pm-server status           # ターミナルからステータス確認
+pm-server context-inject   # セッションコンテキストを stdout に出力（hook 連携用）
+pm-server migrate          # pm-agent からの移行（MCP 登録の切り替え）
 pm-server update-claudemd  # CLAUDE.md の PM Server ルールを更新
 ```
 
@@ -199,17 +225,20 @@ Claude Code Session
   └── MCP Server (stdio)
         └── pm-server serve
               │
-              ├── server.py    → 16 MCP ツール (FastMCP)
+              ├── server.py    → 22 MCP ツール (FastMCP)
               ├── models.py    → Pydantic v2 データモデル
               ├── storage.py   → YAML 読み書き
+              ├── memory.py    → SQLite メモリストア + FTS5 検索
+              ├── recall.py    → セッションコンテキスト構築（トークン予算制御）
+              ├── context.py   → CLI コンテキスト注入
               ├── velocity.py  → ベロシティ計算・リスク検知
               ├── dashboard.py → HTML/テキスト ダッシュボード (Jinja2)
               ├── discovery.py → プロジェクト情報自動推定
               └── installer.py → claude mcp add ラッパー
                     │
-                    ├── project-A/.pm/
-                    ├── project-B/.pm/
-                    └── ~/.pm/registry.yaml
+                    ├── project-A/.pm/ (YAML + memory.db)
+                    ├── project-B/.pm/ (YAML + memory.db)
+                    └── ~/.pm/registry.yaml + memory.db
 ```
 
 ---
@@ -256,7 +285,7 @@ pm-server migrate       # MCP 登録を pm-agent → pm-server に切り替え
 git clone https://github.com/flc-design/pm-server.git
 cd pm-server
 pip install -e ".[dev]"
-pytest                  # 115 テスト
+pytest                  # 237 テスト
 ruff check src/         # リント
 ruff format src/        # フォーマット
 ```
