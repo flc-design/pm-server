@@ -49,6 +49,15 @@ pm-server install       # Registers MCP server in Claude Code
 # Restart Claude Code
 ```
 
+### Update
+
+```bash
+pip install --upgrade pm-server
+# Restart Claude Code
+```
+
+> **Note:** `pip install pm-server` without `--upgrade` will NOT update an existing installation. Always use `--upgrade` (or `-U`) to get the latest version.
+
 ### Initialize a project
 
 ```

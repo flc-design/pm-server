@@ -49,6 +49,15 @@ pm-server install       # Claude Code に MCP サーバーを登録
 # Claude Code を再起動
 ```
 
+### アップデート
+
+```bash
+pip install --upgrade pm-server
+# Claude Code を再起動
+```
+
+> **注意:** `pip install pm-server`（`--upgrade` なし）では既存バージョンは更新されません。最新版にするには必ず `--upgrade`（または `-U`）を付けてください。
+
 ### プロジェクト初期化
 
 ```
