@@ -190,6 +190,15 @@ Add this to your project's `CLAUDE.md` for automatic PM behavior (or run `pm-ser
 ### 作業中に重要な発見・判断があった時
 1. pm_remember で記憶を保存する（関連タスクIDがあれば task_id で紐付け）
 
+### コンテキスト保全（Compaction / Clear 対策）
+Claude Code はセッションが長くなるとコンテキストを自動圧縮（compaction）する。
+圧縮のタイミングは予測できないため、重要な情報は随時保存すること。
+1. 重要な発見・技術的判断は発生時点で即座に pm_remember で保存する（セッション終了を待たない）
+2. 複雑な議論や設計検討の後は、結論を pm_remember でまとめて保存する
+3. 3往復以上のやり取りで未記録の知見があれば、チェックポイントとして pm_remember で保存する
+4. ユーザーが /clear する前は必ず pm_session_summary を実行する
+5. Compaction 後にコンテキストが失われていると感じたら pm_recall で復元する
+
 ### タスク完了時（コードが動作確認できたら）
 1. pm_update_task で done に変更する
 2. pm_log に完了内容を記録する
@@ -205,6 +214,58 @@ Add this to your project's `CLAUDE.md` for automatic PM behavior (or run `pm-ser
 2. pm_log にセッションの成果を記録する
 3. pm_session_summary で要約を保存する
 4. 未コミットの変更があればコミットする
+```
+
+---
+
+## Tips: Getting the Most out of pm-server
+
+### Recommended Workflow
+
+```
+1. Install & register      →  pip install pm-server && pm-server install
+2. Start Claude Code       →  (restart after install)
+3. Initialize project      →  "PM初期化して" or "Initialize PM"
+4. Add tasks               →  "Add task: implement user auth"
+5. Work on tasks            →  "Start MYAPP-001"
+6. Complete tasks           →  "MYAPP-001 done"
+7. End session              →  "Session wrap-up" (triggers summary + log)
+```
+
+### Protecting Context from Compaction
+
+Claude Code automatically compresses (compacts) conversation context when sessions get long. This means detailed information from earlier exchanges can be lost. pm-server's memory tools protect against this:
+
+| Situation | What to do |
+|---|---|
+| Made an important discovery | `pm_remember` immediately — don't wait for session end |
+| Finished a design discussion | Summarize the conclusion with `pm_remember` |
+| About to run `/clear` | Run `pm_session_summary` first |
+| Resuming after compaction | `pm_recall` restores previous context |
+| Starting a new session | `pm_recall` + `pm_status` (auto if CLAUDE.md rules are set) |
+
+**Key principle:** Save early, save often. Compaction timing is unpredictable — if a finding is worth keeping, record it now.
+
+### Session Continuity
+
+pm-server's memory layer ensures nothing is lost between sessions:
+
+```
+Session 1                          Session 2
+  │                                  │
+  ├─ pm_remember (findings)          ├─ pm_recall ← restores context
+  ├─ pm_remember (decisions)         ├─ pm_status ← current state
+  ├─ pm_session_summary              │
+  └─ (session ends)                  └─ (continues seamlessly)
+```
+
+### Multi-Project Management
+
+```
+> "Discover projects under ~/projects"    # Auto-scan & register
+> "Show all projects"                     # Portfolio overview
+> "Search memories for 'auth' globally"   # Cross-project search
+> "Show dashboard for all projects"       # Portfolio HTML dashboard
 ```
 
 ---

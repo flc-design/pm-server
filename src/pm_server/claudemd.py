@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-TEMPLATE_VERSION = 2
+TEMPLATE_VERSION = 3
 BEGIN_MARKER = "<!-- pm-server:begin v={version} -->"
 END_MARKER = "<!-- pm-server:end -->"
 BEGIN_PATTERN = re.compile(r"<!-- pm-server:begin v=(\d+) -->")
@@ -29,6 +29,15 @@ CLAUDEMD_TEMPLATE = """\
 
 ### 作業中に重要な発見・判断があった時
 1. pm_remember で記憶を保存する（関連タスクIDがあれば task_id で紐付け）
+
+### コンテキスト保全（Compaction / Clear 対策）
+Claude Code はセッションが長くなるとコンテキストを自動圧縮（compaction）する。
+圧縮のタイミングは予測できないため、重要な情報は随時保存すること。
+1. 重要な発見・技術的判断は発生時点で即座に pm_remember で保存する（セッション終了を待たない）
+2. 複雑な議論や設計検討の後は、結論を pm_remember でまとめて保存する
+3. 3往復以上のやり取りで未記録の知見があれば、チェックポイントとして pm_remember で保存する
+4. ユーザーが /clear する前は必ず pm_session_summary を実行する
+5. Compaction 後にコンテキストが失われていると感じたら pm_recall で復元する
 
 ### タスク完了時（コードが動作確認できたら）
 1. pm_update_task で done に変更する

@@ -254,13 +254,13 @@ class TestContextBuilderBudget:
 # ─── CLAUDE.md v2 template ─────────────────────────────
 
 
-class TestClaudeMdV2:
-    """Verify the v2 template includes Memory Layer rules."""
+class TestClaudeMdV3:
+    """Verify the v3 template includes Memory Layer + checkpoint rules."""
 
     def test_template_version(self):
         from pm_server.claudemd import TEMPLATE_VERSION
 
-        assert TEMPLATE_VERSION == 2
+        assert TEMPLATE_VERSION == 3
 
     def test_template_has_pm_recall(self):
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
@@ -271,6 +271,12 @@ class TestClaudeMdV2:
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
 
         assert "pm_remember" in CLAUDEMD_TEMPLATE
+
+    def test_template_has_checkpoint_section(self):
+        from pm_server.claudemd import CLAUDEMD_TEMPLATE
+
+        assert "コンテキスト保全" in CLAUDEMD_TEMPLATE
+        assert "Compaction" in CLAUDEMD_TEMPLATE
 
     def test_template_has_pm_session_summary(self):
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
