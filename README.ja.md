@@ -196,6 +196,7 @@ YAML ファイルは人間が読め、手動編集しても壊れません。メ
 2. pm_next で次に着手すべきタスクを3件表示する
 3. pm_recall で前回セッションの文脈を取得する
 4. ブロッカーや期限超過があれば警告する
+5. pm_status の claudemd.other_rule_sections に他のルールセクションが報告された場合、この CLAUDE.md 内の該当セクションのルールも全て実行する
 
 ### タスクに着手する前
 1. 該当タスクを pm_update_task で in_progress に変更する

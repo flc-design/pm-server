@@ -9,10 +9,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-TEMPLATE_VERSION = 4
+TEMPLATE_VERSION = 5
 BEGIN_MARKER = "<!-- pm-server:begin v={version} -->"
 END_MARKER = "<!-- pm-server:end -->"
 BEGIN_PATTERN = re.compile(r"<!-- pm-server:begin v=(\d+) -->")
+OTHER_SECTION_PATTERN = re.compile(r"<!-- ([\w-]+):begin")
 
 CLAUDEMD_TEMPLATE = """\
 <!-- pm-server:begin v={version} -->
@@ -23,6 +24,8 @@ CLAUDEMD_TEMPLATE = """\
 2. pm_next で次に着手すべきタスクを3件表示する
 3. pm_recall で前回セッションの文脈を取得する
 4. ブロッカーや期限超過があれば警告する
+5. pm_status の claudemd.other_rule_sections に他のルールセクションが報告された場合、
+   この CLAUDE.md 内の該当セクションのルールも全て実行する
 
 ### タスクに着手する前
 1. 該当タスクを pm_update_task で in_progress に変更する
@@ -70,7 +73,8 @@ def get_claudemd_status(project_root: Path) -> dict:
     """Return the PM Server section status in CLAUDE.md.
 
     Returns:
-        dict with keys: exists, has_pm_section, version, up_to_date
+        dict with keys: exists, has_pm_section, version, up_to_date,
+        other_rule_sections
     """
     claude_md = project_root / "CLAUDE.md"
     result: dict = {
@@ -78,6 +82,7 @@ def get_claudemd_status(project_root: Path) -> dict:
         "has_pm_section": False,
         "version": None,
         "up_to_date": False,
+        "other_rule_sections": [],
     }
     if not claude_md.exists():
         return result
@@ -88,6 +93,10 @@ def get_claudemd_status(project_root: Path) -> dict:
         result["has_pm_section"] = True
         result["version"] = int(match.group(1))
         result["up_to_date"] = result["version"] >= TEMPLATE_VERSION
+
+    # Detect other MCP rule sections (any <!-- name:begin --> marker except pm-server)
+    all_sections = OTHER_SECTION_PATTERN.findall(content)
+    result["other_rule_sections"] = [s for s in all_sections if s != "pm-server"]
 
     return result
 

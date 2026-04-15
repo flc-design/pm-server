@@ -26,6 +26,7 @@ class TestGetClaudemdStatus:
         assert status["has_pm_section"] is False
         assert status["version"] is None
         assert status["up_to_date"] is False
+        assert status["other_rule_sections"] == []
 
     def test_claudemd_without_markers(self, project_dir):
         (project_dir / "CLAUDE.md").write_text("# My Project\n")
@@ -33,6 +34,7 @@ class TestGetClaudemdStatus:
         assert status["exists"] is True
         assert status["has_pm_section"] is False
         assert status["version"] is None
+        assert status["other_rule_sections"] == []
 
     def test_claudemd_with_current_markers(self, project_dir):
         content = (
@@ -54,6 +56,60 @@ class TestGetClaudemdStatus:
         assert status["has_pm_section"] is True
         assert status["version"] == 0
         assert status["up_to_date"] is False
+
+
+class TestOtherRuleSections:
+    def test_no_other_sections(self, project_dir):
+        """Only pm-server markers present → empty list."""
+        content = (
+            f"<!-- pm-server:begin v={TEMPLATE_VERSION} -->\n"
+            f"rules\n"
+            f"<!-- pm-server:end -->\n"
+        )
+        (project_dir / "CLAUDE.md").write_text(content)
+        status = get_claudemd_status(project_dir)
+        assert status["other_rule_sections"] == []
+
+    def test_one_other_section(self, project_dir):
+        """pm-server + synaptic-ledger → detects synaptic-ledger."""
+        content = (
+            f"<!-- pm-server:begin v={TEMPLATE_VERSION} -->\nrules\n<!-- pm-server:end -->\n"
+            f"<!-- synaptic-ledger:begin v=1 -->\nledger rules\n<!-- synaptic-ledger:end -->\n"
+        )
+        (project_dir / "CLAUDE.md").write_text(content)
+        status = get_claudemd_status(project_dir)
+        assert status["other_rule_sections"] == ["synaptic-ledger"]
+
+    def test_multiple_other_sections(self, project_dir):
+        """Multiple MCP rule sections → all detected except pm-server."""
+        content = (
+            f"<!-- pm-server:begin v={TEMPLATE_VERSION} -->\nrules\n<!-- pm-server:end -->\n"
+            f"<!-- synaptic-ledger:begin v=1 -->\nrules\n<!-- synaptic-ledger:end -->\n"
+            f"<!-- code-review-bot:begin v=2 -->\nrules\n<!-- code-review-bot:end -->\n"
+        )
+        (project_dir / "CLAUDE.md").write_text(content)
+        status = get_claudemd_status(project_dir)
+        assert "synaptic-ledger" in status["other_rule_sections"]
+        assert "code-review-bot" in status["other_rule_sections"]
+        assert "pm-server" not in status["other_rule_sections"]
+        assert len(status["other_rule_sections"]) == 2
+
+    def test_pm_server_excluded_from_other(self, project_dir):
+        """pm-server is always excluded from other_rule_sections."""
+        content = f"<!-- pm-server:begin v={TEMPLATE_VERSION} -->\nrules\n<!-- pm-server:end -->\n"
+        (project_dir / "CLAUDE.md").write_text(content)
+        status = get_claudemd_status(project_dir)
+        assert "pm-server" not in status["other_rule_sections"]
+
+    def test_underscore_names_detected(self, project_dir):
+        """Section names with underscores are also detected."""
+        content = (
+            f"<!-- pm-server:begin v={TEMPLATE_VERSION} -->\nrules\n<!-- pm-server:end -->\n"
+            f"<!-- my_custom_tool:begin v=1 -->\nrules\n<!-- my_custom_tool:end -->\n"
+        )
+        (project_dir / "CLAUDE.md").write_text(content)
+        status = get_claudemd_status(project_dir)
+        assert status["other_rule_sections"] == ["my_custom_tool"]
 
 
 class TestEnsureClaudemd:
