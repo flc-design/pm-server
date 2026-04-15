@@ -239,6 +239,45 @@ class TestPmCleanup:
             assert result["valid"] == 1
             assert result["removed"] == 1
 
+    def test_cleanup_detects_orphan_files(self, initialized_project):
+        """pm_cleanup reports orphan project files in global ~/.pm/."""
+        import pm_server.storage
+
+        global_pm = pm_server.storage.GLOBAL_PM_DIR
+        (global_pm / "tasks.yaml").write_text("tasks: []\n")
+        (global_pm / "decisions.yaml").write_text("decisions: []\n")
+
+        from pm_server.models import Registry, RegistryEntry
+
+        with (
+            patch("pm_server.server.load_registry") as mock_reg,
+            patch("pm_server.server.save_registry"),
+        ):
+            mock_reg.return_value = Registry(
+                projects=[
+                    RegistryEntry(path=str(initialized_project), name="valid"),
+                ]
+            )
+            result = pm_cleanup()
+            assert "tasks.yaml" in result["orphan_files_in_global"]
+            assert "decisions.yaml" in result["orphan_files_in_global"]
+
+    def test_cleanup_no_orphan_files(self, initialized_project):
+        """pm_cleanup reports empty list when no orphan files exist."""
+        from pm_server.models import Registry, RegistryEntry
+
+        with (
+            patch("pm_server.server.load_registry") as mock_reg,
+            patch("pm_server.server.save_registry"),
+        ):
+            mock_reg.return_value = Registry(
+                projects=[
+                    RegistryEntry(path=str(initialized_project), name="valid"),
+                ]
+            )
+            result = pm_cleanup()
+            assert result["orphan_files_in_global"] == []
+
 
 class TestPmRisks:
     def test_risks_returns_list(self, initialized_project):
@@ -469,7 +508,8 @@ class TestPmStatusExtended:
     def test_active_tasks_included(self, initialized_project):
         # Set a task to in_progress first
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_status(project_path=str(initialized_project))
@@ -487,7 +527,8 @@ class TestPmStatusExtended:
 
     def test_next_pm_actions_with_active(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_status(project_path=str(initialized_project))
@@ -507,7 +548,8 @@ class TestPmLogAutoLink:
 
     def test_auto_links_single_active_task(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_log(
@@ -525,7 +567,8 @@ class TestPmLogAutoLink:
 
     def test_explicit_task_id_used(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_log(
@@ -539,11 +582,13 @@ class TestPmLogAutoLink:
     def test_no_auto_link_multiple_active(self, initialized_project):
         """No auto-link when multiple tasks are in_progress."""
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         pm_update_task(
-            task_id="TEST-003", status="in_progress",
+            task_id="TEST-003",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_log(
@@ -558,7 +603,8 @@ class TestPmRememberAutoLink:
 
     def test_auto_links_single_active_task(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_remember(
@@ -569,7 +615,8 @@ class TestPmRememberAutoLink:
 
     def test_no_auto_link_when_task_id_provided(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_remember(
@@ -581,7 +628,8 @@ class TestPmRememberAutoLink:
 
     def test_no_auto_link_when_decision_id_provided(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_remember(
@@ -593,11 +641,13 @@ class TestPmRememberAutoLink:
 
     def test_no_auto_link_multiple_active(self, initialized_project):
         pm_update_task(
-            task_id="TEST-002", status="in_progress",
+            task_id="TEST-002",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         pm_update_task(
-            task_id="TEST-003", status="in_progress",
+            task_id="TEST-003",
+            status="in_progress",
             project_path=str(initialized_project),
         )
         result = pm_remember(

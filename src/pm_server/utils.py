@@ -8,13 +8,26 @@ from pathlib import Path
 from .models import Phase, ProjectNotFoundError, Task, TaskStatus
 
 
+def _is_project_pm_dir(pm_dir: Path) -> bool:
+    """Check if a .pm/ directory belongs to an actual project.
+
+    A project .pm/ always contains project.yaml (created by pm_init).
+    The global ~/.pm/ only has registry.yaml and memory.db, so it is
+    excluded by this check.
+    """
+    return pm_dir.is_dir() and (pm_dir / "project.yaml").exists()
+
+
 def resolve_project_path(project_path: str | None = None) -> Path:
     """Resolve the project root directory.
 
     Priority:
     1. Explicit project_path argument
     2. PM_PROJECT_PATH environment variable
-    3. Walk up from cwd looking for .pm/
+    3. Walk up from cwd looking for .pm/ with project.yaml
+
+    The cwd walk-up skips .pm/ directories without project.yaml
+    (e.g. the global ~/.pm/ used for registry).
     """
     if project_path:
         p = Path(project_path).resolve()
@@ -29,10 +42,13 @@ def resolve_project_path(project_path: str | None = None) -> Path:
 
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
-        if (parent / ".pm").is_dir():
+        if _is_project_pm_dir(parent / ".pm"):
             return parent
 
-    raise ProjectNotFoundError("No .pm/ directory found. Run pm_init first.")
+    raise ProjectNotFoundError(
+        "No .pm/ directory found in current directory tree. "
+        "Provide project_path or run pm_init first."
+    )
 
 
 def generate_task_id(project_name: str, number: int) -> str:

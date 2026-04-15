@@ -114,23 +114,15 @@ def _build_next_actions(active_tasks: list[dict], all_tasks: list[Task]) -> list
 
     if active_tasks:
         ids = ", ".join(t["id"] for t in active_tasks)
-        actions.append(
-            f"Call pm_update_task when tasks are done (active: {ids})"
-        )
-        actions.append(
-            "Call pm_remember when you discover something important"
-        )
+        actions.append(f"Call pm_update_task when tasks are done (active: {ids})")
+        actions.append("Call pm_remember when you discover something important")
     else:
         todo = [t for t in all_tasks if t.status == TaskStatus.TODO]
         if todo:
-            actions.append(
-                "Call pm_update_task to start a task (set in_progress)"
-            )
+            actions.append("Call pm_update_task to start a task (set in_progress)")
 
     actions.append("Call pm_log after completing work")
-    actions.append(
-        "Call pm_session_summary before ending the session"
-    )
+    actions.append("Call pm_session_summary before ending the session")
 
     return actions
 
@@ -955,7 +947,11 @@ def pm_discover(scan_path: str = ".") -> dict:
 
 @mcp.tool()
 def pm_cleanup() -> dict:
-    """Health-check the registry. Detect and remove invalid paths."""
+    """Health-check the registry. Detect and remove invalid paths.
+
+    Also detects orphan project files in the global ~/.pm/ directory
+    that may have been created by the cwd-resolution bug.
+    """
     registry = load_registry()
     valid = []
     invalid = []
@@ -971,10 +967,24 @@ def pm_cleanup() -> dict:
         registry.projects = valid
         save_registry(registry)
 
+    # Detect orphan project files in global ~/.pm/
+    orphan_files: list[str] = []
+    project_only_files = [
+        "tasks.yaml",
+        "decisions.yaml",
+        "risks.yaml",
+        "milestones.yaml",
+    ]
+    global_pm = _storage.GLOBAL_PM_DIR
+    for filename in project_only_files:
+        if (global_pm / filename).exists():
+            orphan_files.append(filename)
+
     return {
         "valid": len(valid),
         "removed": len(invalid),
         "invalid_entries": invalid,
+        "orphan_files_in_global": orphan_files,
     }
 
 
