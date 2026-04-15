@@ -16,6 +16,7 @@ from pm_server.server import (
     pm_list,
     pm_log,
     pm_next,
+    pm_remember,
     pm_risks,
     pm_status,
     pm_tasks,
@@ -460,3 +461,147 @@ class TestPmUpdateTaskIssueCompletion:
             project_path=str(initialized_project),
         )
         assert "all_issues_resolved" not in result
+
+
+class TestPmStatusExtended:
+    """Tests for active_tasks, hooks, and next_pm_actions in pm_status."""
+
+    def test_active_tasks_included(self, initialized_project):
+        # Set a task to in_progress first
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_status(project_path=str(initialized_project))
+        assert "active_tasks" in result
+        assert any(t["id"] == "TEST-002" for t in result["active_tasks"])
+
+    def test_active_tasks_empty(self, initialized_project):
+        result = pm_status(project_path=str(initialized_project))
+        assert result["active_tasks"] == []
+
+    def test_hooks_status_included(self, initialized_project):
+        result = pm_status(project_path=str(initialized_project))
+        assert "hooks" in result
+        assert "installed" in result["hooks"]
+
+    def test_next_pm_actions_with_active(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_status(project_path=str(initialized_project))
+        actions = result["next_pm_actions"]
+        assert any("pm_update_task" in a for a in actions)
+        assert any("pm_remember" in a for a in actions)
+
+    def test_next_pm_actions_without_active(self, initialized_project):
+        result = pm_status(project_path=str(initialized_project))
+        actions = result["next_pm_actions"]
+        assert any("pm_log" in a for a in actions)
+        assert any("pm_session_summary" in a for a in actions)
+
+
+class TestPmLogAutoLink:
+    """Tests for pm_log task_id auto-inference."""
+
+    def test_auto_links_single_active_task(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_log(
+            entry="Completed feature",
+            project_path=str(initialized_project),
+        )
+        assert result["auto_linked_task"] == "TEST-002"
+
+    def test_no_auto_link_without_active(self, initialized_project):
+        result = pm_log(
+            entry="General note",
+            project_path=str(initialized_project),
+        )
+        assert "auto_linked_task" not in result
+
+    def test_explicit_task_id_used(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_log(
+            entry="Specific task log",
+            task_id="TEST-001",
+            project_path=str(initialized_project),
+        )
+        # explicit task_id should override auto-link
+        assert "auto_linked_task" not in result
+
+    def test_no_auto_link_multiple_active(self, initialized_project):
+        """No auto-link when multiple tasks are in_progress."""
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        pm_update_task(
+            task_id="TEST-003", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_log(
+            entry="Ambiguous",
+            project_path=str(initialized_project),
+        )
+        assert "auto_linked_task" not in result
+
+
+class TestPmRememberAutoLink:
+    """Tests for pm_remember task_id auto-inference."""
+
+    def test_auto_links_single_active_task(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_remember(
+            content="Important finding",
+            project_path=str(initialized_project),
+        )
+        assert result["auto_linked_task"] == "TEST-002"
+
+    def test_no_auto_link_when_task_id_provided(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_remember(
+            content="Linked to specific task",
+            task_id="TEST-001",
+            project_path=str(initialized_project),
+        )
+        assert "auto_linked_task" not in result
+
+    def test_no_auto_link_when_decision_id_provided(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_remember(
+            content="Decision context",
+            decision_id="ADR-001",
+            project_path=str(initialized_project),
+        )
+        assert "auto_linked_task" not in result
+
+    def test_no_auto_link_multiple_active(self, initialized_project):
+        pm_update_task(
+            task_id="TEST-002", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        pm_update_task(
+            task_id="TEST-003", status="in_progress",
+            project_path=str(initialized_project),
+        )
+        result = pm_remember(
+            content="Ambiguous context",
+            project_path=str(initialized_project),
+        )
+        assert "auto_linked_task" not in result

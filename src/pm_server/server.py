@@ -102,6 +102,39 @@ def _task_summary(task: Task) -> dict:
     return result
 
 
+def _get_active_tasks(pm_path: Path) -> list[Task]:
+    """Return in-progress tasks for the project."""
+    tasks = load_tasks(pm_path)
+    return [t for t in tasks if t.status == TaskStatus.IN_PROGRESS]
+
+
+def _build_next_actions(active_tasks: list[dict], all_tasks: list[Task]) -> list[str]:
+    """Build contextual PM action reminders based on current state."""
+    actions = []
+
+    if active_tasks:
+        ids = ", ".join(t["id"] for t in active_tasks)
+        actions.append(
+            f"Call pm_update_task when tasks are done (active: {ids})"
+        )
+        actions.append(
+            "Call pm_remember when you discover something important"
+        )
+    else:
+        todo = [t for t in all_tasks if t.status == TaskStatus.TODO]
+        if todo:
+            actions.append(
+                "Call pm_update_task to start a task (set in_progress)"
+            )
+
+    actions.append("Call pm_log after completing work")
+    actions.append(
+        "Call pm_session_summary before ending the session"
+    )
+
+    return actions
+
+
 # ─── Project Management ─────────────────────────────
 
 
@@ -177,10 +210,24 @@ def pm_status(project_path: str | None = None) -> dict:
     # Blockers
     blockers = [_task_summary(t) for t in tasks if t.status == TaskStatus.BLOCKED]
 
+    # Active tasks (in_progress)
+    active_tasks = [_task_summary(t) for t in tasks if t.status == TaskStatus.IN_PROGRESS]
+
     # CLAUDE.md status
     from .claudemd import get_claudemd_status
 
     root = resolve_project_path(project_path)
+
+    # Hooks status — auto-install if missing
+    from .hooks import get_hooks_status, install_hooks
+
+    hooks_status = get_hooks_status()
+    if not hooks_status["installed"]:
+        install_hooks()
+        hooks_status = get_hooks_status()
+
+    # Next PM actions — contextual reminders for the LLM
+    next_actions = _build_next_actions(active_tasks, tasks)
 
     return {
         "project": {
@@ -195,8 +242,11 @@ def pm_status(project_path: str | None = None) -> dict:
         },
         "phases": phase_info,
         "blockers": blockers,
+        "active_tasks": active_tasks,
         "health": project.health.model_dump(),
         "claudemd": get_claudemd_status(root),
+        "hooks": hooks_status,
+        "next_pm_actions": next_actions,
     }
 
 
@@ -442,12 +492,21 @@ def pm_remember(
 
     Memories are searchable and persist across sessions.
     Link to task_id or decision_id for structured context.
+    If task_id is omitted, auto-links to the active in-progress task.
     type: observation | insight | lesson
     tags: comma-separated string (e.g. "auth,api,refactor")
     """
     store = _get_memory_store(project_path)
     pm_path = _get_pm_path(project_path)
     project = load_project(pm_path)
+
+    # Auto-infer task_id from active in-progress task
+    auto_linked = False
+    if task_id is None and decision_id is None:
+        active = _get_active_tasks(pm_path)
+        if len(active) == 1:
+            task_id = active[0].id
+            auto_linked = True
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
@@ -461,12 +520,15 @@ def pm_remember(
         project=project.name,
     )
     memory_id = store.save(memory)
-    return {
+    result = {
         "status": "saved",
         "memory_id": memory_id,
         "session_id": _current_session_id,
         "type": type,
     }
+    if auto_linked:
+        result["auto_linked_task"] = task_id
+    return result
 
 
 @mcp.tool()
@@ -725,25 +787,42 @@ def pm_memory_cleanup(
 def pm_log(
     entry: str,
     category: str = "progress",
+    task_id: str | None = None,
     project_path: str | None = None,
 ) -> dict:
     """Add an entry to today's daily log.
 
     category: progress | decision | blocker | note | milestone
+    If task_id is omitted, auto-links to the active in-progress task.
     """
     pm_path = _get_pm_path(project_path)
+
+    # Auto-infer task_id from active in-progress task
+    auto_linked = False
+    if task_id is None:
+        active = _get_active_tasks(pm_path)
+        if len(active) == 1:
+            task_id = active[0].id
+            auto_linked = True
+
+    # Prepend task_id to entry for traceability
+    log_text = f"[{task_id}] {entry}" if task_id else entry
+
     now = _dt.datetime.now()
     log_entry = DailyLogEntry(
         time=now.strftime("%H:%M"),
         category=LogCategory(category),
-        entry=entry,
+        entry=log_text,
     )
     log = add_daily_log(pm_path, log_entry)
-    return {
+    result: dict = {
         "status": "logged",
         "date": log.date.isoformat(),
         "entries_today": len(log.entries),
     }
+    if auto_linked:
+        result["auto_linked_task"] = task_id
+    return result
 
 
 @mcp.tool()

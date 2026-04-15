@@ -113,6 +113,39 @@ def context_inject_cmd():
     inject_context()
 
 
+@cli.group()
+def hook():
+    """Manage Claude Code hooks for PM Server."""
+
+
+@hook.command("post-tool-use")
+def hook_post_tool_use():
+    """Handle PostToolUse events (called by Claude Code)."""
+    from .hooks import handle_post_tool_use
+
+    handle_post_tool_use()
+
+
+@cli.command("install-hooks")
+def install_hooks_cmd():
+    """Install PM Server hooks into Claude Code settings."""
+    from .hooks import install_hooks
+
+    msg = install_hooks()
+    prefix = "✓" if "installed" in msg or "skipped" in msg else "✗"
+    click.echo(f"{prefix} {msg}")
+
+
+@cli.command("uninstall-hooks")
+def uninstall_hooks_cmd():
+    """Remove PM Server hooks from Claude Code settings."""
+    from .hooks import uninstall_hooks
+
+    msg = uninstall_hooks()
+    prefix = "✓" if "removed" in msg or "skipped" in msg else "✗"
+    click.echo(f"{prefix} {msg}")
+
+
 @cli.command("update-claudemd")
 @click.option("--all", "all_projects", is_flag=True, help="Update all registered projects.")
 def update_claudemd_cmd(all_projects: bool):

@@ -104,7 +104,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 | Tool | Description |
 |---|---|
 | `pm_init` | Create `.pm/`, register in global registry, auto-detect project info |
-| `pm_status` | Phase progress, task summary, blockers, velocity |
+| `pm_status` | Phase progress, task summary, blockers, velocity, active tasks, hook auto-setup |
 | `pm_tasks` | List tasks with filters (status / phase / priority / tag) |
 | `pm_add_task` | Add task with auto-numbered ID (e.g., `MYAPP-001`) |
 | `pm_update_task` | Update status, priority, notes, blocked_by |
@@ -116,7 +116,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 | Tool | Description |
 |---|---|
-| `pm_log` | Daily log entry (progress / decision / blocker / note / milestone) |
+| `pm_log` | Daily log entry with auto task linking (progress / decision / blocker / note / milestone) |
 | `pm_add_decision` | Add ADR with context, decision, and consequences |
 
 ### Analysis
@@ -144,7 +144,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 | Tool | Description |
 |---|---|
-| `pm_remember` | Save a memory tied to the current session (observation / insight / lesson) |
+| `pm_remember` | Save a memory with auto task linking (observation / insight / lesson) |
 | `pm_recall` | Recall memories — FTS5 search, by task, or cross-project |
 | `pm_session_summary` | Save / get / list session summaries for continuity |
 | `pm_memory_search` | Advanced search with type, tag, and task filters |
@@ -283,6 +283,15 @@ Session 1                          Session 2
   └─ (session ends)                  └─ (continues seamlessly)
 ```
 
+### Automatic Hooks (Lifecycle Enforcement)
+
+pm-server automatically installs Claude Code hooks at first session start (`pm_status`). After a `git commit`, a PostToolUse hook injects a reminder into the conversation, prompting Claude to call `pm_log`, `pm_update_task`, and `pm_next`.
+
+- Hooks are installed globally in `~/.claude/settings.json`
+- Existing user hooks are preserved (pm-server hooks are appended, not replaced)
+- No manual setup needed — hooks are auto-installed on upgrade
+- To manage manually: `pm-server install-hooks` / `pm-server uninstall-hooks`
+
 ### Multi-Project Management
 
 ```
@@ -305,6 +314,8 @@ pm-server status           # Show project status from terminal
 pm-server context-inject   # Print session context to stdout (for hook integration)
 pm-server migrate          # Migrate from pm-agent (rename transition)
 pm-server update-claudemd  # Update PM Server rules in CLAUDE.md
+pm-server install-hooks    # Manually install Claude Code hooks (auto-installed via pm_status)
+pm-server uninstall-hooks  # Remove PM Server hooks from Claude Code settings
 ```
 
 ---
@@ -315,6 +326,7 @@ pm-server update-claudemd  # Update PM Server rules in CLAUDE.md
 Claude Code Session
   │
   ├── CLAUDE.md auto-action rules
+  ├── PostToolUse hooks (auto-installed)
   │
   └── MCP Server (stdio)
         └── pm-server serve
@@ -324,6 +336,7 @@ Claude Code Session
               ├── storage.py   → YAML read/write
               ├── memory.py    → SQLite memory store + FTS5 search
               ├── recall.py    → Session context builder (token-budgeted)
+              ├── hooks.py     → Claude Code hook handler + installer
               ├── context.py   → CLI context injection
               ├── velocity.py  → Velocity calculation & risk detection
               ├── dashboard.py → HTML/text dashboard (Jinja2)
