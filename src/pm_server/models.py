@@ -151,6 +151,7 @@ class Task(BaseModel):
     description: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
     notes: str = ""
+    parent_id: str | None = None
 
 
 class Consequences(BaseModel):

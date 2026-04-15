@@ -255,12 +255,12 @@ class TestContextBuilderBudget:
 
 
 class TestClaudeMdV3:
-    """Verify the v3 template includes Memory Layer + checkpoint rules."""
+    """Verify the v4 template includes Memory Layer + checkpoint + issue workflow rules."""
 
     def test_template_version(self):
         from pm_server.claudemd import TEMPLATE_VERSION
 
-        assert TEMPLATE_VERSION == 3
+        assert TEMPLATE_VERSION == 4
 
     def test_template_has_pm_recall(self):
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
@@ -287,3 +287,13 @@ class TestClaudeMdV3:
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
 
         assert "作業中に重要な発見・判断があった時" in CLAUDEMD_TEMPLATE
+
+    def test_template_has_pm_add_issue(self):
+        from pm_server.claudemd import CLAUDEMD_TEMPLATE
+
+        assert "pm_add_issue" in CLAUDEMD_TEMPLATE
+
+    def test_template_has_issue_workflow_section(self):
+        from pm_server.claudemd import CLAUDEMD_TEMPLATE
+
+        assert "タスク完了確認中にイシュー" in CLAUDEMD_TEMPLATE

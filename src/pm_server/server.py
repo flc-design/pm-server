@@ -26,6 +26,7 @@ from .models import (
     RiskStatus,
     SessionSummary,
     Task,
+    TaskNotFoundError,
     TaskStatus,
 )
 from .storage import (
@@ -87,7 +88,7 @@ def _get_pm_path(project_path: str | None) -> Path:
 
 def _task_summary(task: Task) -> dict:
     """Convert a Task to a concise dict for tool output."""
-    return {
+    result = {
         "id": task.id,
         "title": task.title,
         "status": task.status.value,
@@ -96,6 +97,9 @@ def _task_summary(task: Task) -> dict:
         "tags": task.tags,
         "blocked_by": task.blocked_by,
     }
+    if task.parent_id:
+        result["parent_id"] = task.parent_id
+    return result
 
 
 # ─── Project Management ─────────────────────────────
@@ -203,11 +207,13 @@ def pm_tasks(
     phase: str | None = None,
     priority: str | None = None,
     tag: str | None = None,
+    parent_id: str | None = None,
 ) -> list:
     """List tasks with optional filters.
 
     Filter by status (todo/in_progress/review/done/blocked),
-    phase ID, priority (P0-P3), or tag.
+    phase ID, priority (P0-P3), tag, or parent_id.
+    Use parent_id to list child issues of a specific task.
     """
     pm_path = _get_pm_path(project_path)
     tasks = load_tasks(pm_path)
@@ -220,6 +226,8 @@ def pm_tasks(
         tasks = [t for t in tasks if t.priority.value == priority]
     if tag:
         tasks = [t for t in tasks if tag in t.tags]
+    if parent_id:
+        tasks = [t for t in tasks if t.parent_id == parent_id]
 
     return [_task_summary(t) for t in tasks]
 
@@ -287,7 +295,21 @@ def pm_update_task(
         updates["blocked_by"] = blocked_by
 
     task = update_task(pm_path, task_id, **updates)
-    return {"status": "updated", "task": _task_summary(task)}
+    result: dict = {"status": "updated", "task": _task_summary(task)}
+
+    # Check if all sibling issues are done → suggest closing parent
+    if status == "done" and task.parent_id:
+        all_tasks = load_tasks(pm_path)
+        siblings = [t for t in all_tasks if t.parent_id == task.parent_id]
+        if siblings and all(s.status == TaskStatus.DONE for s in siblings):
+            result["all_issues_resolved"] = True
+            result["parent_id"] = task.parent_id
+            result["message"] = (
+                f"All issues for {task.parent_id} are resolved. "
+                f"Consider marking {task.parent_id} as done."
+            )
+
+    return result
 
 
 @mcp.tool()
@@ -343,6 +365,65 @@ def pm_blockers(project_path: str | None = None) -> list:
         }
         for t in blocked
     ]
+
+
+@mcp.tool()
+def pm_add_issue(
+    parent_id: str,
+    title: str,
+    priority: str = "P1",
+    description: str = "",
+    tags: list[str] | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """Add an issue (child task) to an existing task.
+
+    Use when issues are found during review or verification of a completed task.
+    Phase is auto-inherited from the parent task.
+    If the parent task is 'done', it is automatically moved back to 'review'.
+
+    parent_id: The ID of the parent task (e.g. 'PROJ-001').
+    priority: P0 (critical) | P1 (important) | P2 (nice-to-have) | P3 (someday)
+    """
+    pm_path = _get_pm_path(project_path)
+    project = load_project(pm_path)
+    tasks = load_tasks(pm_path)
+
+    # Find parent task
+    parent = None
+    for t in tasks:
+        if t.id == parent_id:
+            parent = t
+            break
+    if parent is None:
+        raise TaskNotFoundError(f"Parent task {parent_id} not found")
+
+    # Create child task with inherited phase
+    number = next_task_number(pm_path)
+    task_id = generate_task_id(project.name, number)
+
+    child = Task(
+        id=task_id,
+        title=title,
+        phase=parent.phase,
+        priority=Priority(priority),
+        description=description,
+        tags=tags or [],
+        parent_id=parent_id,
+    )
+    add_task(pm_path, child)
+
+    # Auto-revert parent to review if it was done
+    parent_reverted = False
+    if parent.status == TaskStatus.DONE:
+        update_task(pm_path, parent_id, status=TaskStatus.REVIEW)
+        parent_reverted = True
+
+    result = {"status": "created", "task": _task_summary(child)}
+    if parent_reverted:
+        result["parent_reverted"] = True
+        result["message"] = f"{parent_id} was 'done' → automatically moved to 'review'"
+    return result
 
 
 # ─── Memory ──────────────────────────────────────────

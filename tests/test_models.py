@@ -72,6 +72,26 @@ class TestTask:
         assert restored.id == task.id
         assert restored.tags == ["a"]
 
+    def test_parent_id_default_none(self):
+        task = Task(id="T-001", title="Test", phase="p1")
+        assert task.parent_id is None
+
+    def test_parent_id_set(self):
+        task = Task(id="T-002", title="Sub issue", phase="p1", parent_id="T-001")
+        assert task.parent_id == "T-001"
+
+    def test_parent_id_backward_compatible(self):
+        """Existing YAML data without parent_id should load correctly."""
+        data = {
+            "id": "T-001",
+            "title": "Old task",
+            "phase": "p1",
+            "status": "todo",
+            "priority": "P1",
+        }
+        task = Task(**data)
+        assert task.parent_id is None
+
 
 class TestDecision:
     def test_defaults(self):

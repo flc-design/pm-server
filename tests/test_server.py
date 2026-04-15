@@ -6,6 +6,7 @@ import pytest
 
 from pm_server.server import (
     pm_add_decision,
+    pm_add_issue,
     pm_add_task,
     pm_blockers,
     pm_cleanup,
@@ -285,3 +286,177 @@ class TestPmDashboard:
     def test_text_dashboard(self, initialized_project):
         text = pm_dashboard(project_path=str(initialized_project), format="text")
         assert "testproj" in text.lower() or "Test Project" in text
+
+
+class TestPmAddIssue:
+    def test_add_issue_basic(self, initialized_project):
+        """pm_add_issue creates a child task linked to the parent."""
+        result = pm_add_issue(
+            parent_id="TEST-002",
+            title="Fix validation bug",
+            project_path=str(initialized_project),
+        )
+        assert result["status"] == "created"
+        assert result["task"]["parent_id"] == "TEST-002"
+        assert result["task"]["phase"] == "phase-1"  # inherited from parent
+
+    def test_add_issue_inherits_phase(self, initialized_project):
+        """Child task inherits phase from parent automatically."""
+        result = pm_add_issue(
+            parent_id="TEST-001",
+            title="Phase-0 issue",
+            project_path=str(initialized_project),
+        )
+        assert result["task"]["phase"] == "phase-0"
+
+    def test_add_issue_reverts_done_parent_to_review(self, initialized_project):
+        """When parent is 'done', adding an issue moves it to 'review'."""
+        result = pm_add_issue(
+            parent_id="TEST-001",  # status: done
+            title="Found a problem",
+            project_path=str(initialized_project),
+        )
+        assert result["parent_reverted"] is True
+        assert "review" in result["message"]
+
+        # Verify parent status actually changed
+        tasks = pm_tasks(project_path=str(initialized_project))
+        parent = next(t for t in tasks if t["id"] == "TEST-001")
+        assert parent["status"] == "review"
+
+    def test_add_issue_no_revert_when_parent_not_done(self, initialized_project):
+        """When parent is not 'done', no automatic status change."""
+        result = pm_add_issue(
+            parent_id="TEST-002",  # status: todo
+            title="New issue",
+            project_path=str(initialized_project),
+        )
+        assert "parent_reverted" not in result
+
+    def test_add_issue_nonexistent_parent(self, initialized_project):
+        """Adding an issue to a nonexistent parent raises an error."""
+        with pytest.raises(Exception):
+            pm_add_issue(
+                parent_id="NOPE-999",
+                title="Orphan issue",
+                project_path=str(initialized_project),
+            )
+
+    def test_add_issue_with_priority_and_tags(self, initialized_project):
+        """pm_add_issue accepts priority and tags."""
+        result = pm_add_issue(
+            parent_id="TEST-002",
+            title="Critical fix",
+            priority="P0",
+            tags=["bugfix", "urgent"],
+            project_path=str(initialized_project),
+        )
+        assert result["task"]["priority"] == "P0"
+        assert "bugfix" in result["task"]["tags"]
+
+
+class TestPmTasksParentFilter:
+    def test_filter_by_parent_id(self, initialized_project):
+        """pm_tasks(parent_id=...) returns only child issues."""
+        # Add two issues to TEST-002
+        pm_add_issue(
+            parent_id="TEST-002",
+            title="Issue A",
+            project_path=str(initialized_project),
+        )
+        pm_add_issue(
+            parent_id="TEST-002",
+            title="Issue B",
+            project_path=str(initialized_project),
+        )
+        # Add one issue to TEST-001
+        pm_add_issue(
+            parent_id="TEST-001",
+            title="Issue C",
+            project_path=str(initialized_project),
+        )
+
+        children = pm_tasks(
+            project_path=str(initialized_project),
+            parent_id="TEST-002",
+        )
+        assert len(children) == 2
+        assert all(c["parent_id"] == "TEST-002" for c in children)
+
+    def test_filter_parent_id_no_children(self, initialized_project):
+        """pm_tasks with parent_id returns empty list when no children."""
+        children = pm_tasks(
+            project_path=str(initialized_project),
+            parent_id="TEST-003",
+        )
+        assert children == []
+
+
+class TestPmUpdateTaskIssueCompletion:
+    def test_all_issues_resolved_notification(self, initialized_project):
+        """When all child issues are done, result includes completion hint."""
+        # Add two issues
+        pm_add_issue(
+            parent_id="TEST-002",
+            title="Issue 1",
+            project_path=str(initialized_project),
+        )
+        pm_add_issue(
+            parent_id="TEST-002",
+            title="Issue 2",
+            project_path=str(initialized_project),
+        )
+
+        # Complete first child
+        children = pm_tasks(
+            project_path=str(initialized_project),
+            parent_id="TEST-002",
+        )
+        pm_update_task(
+            task_id=children[0]["id"],
+            status="done",
+            project_path=str(initialized_project),
+        )
+
+        # Complete second child → should trigger notification
+        result = pm_update_task(
+            task_id=children[1]["id"],
+            status="done",
+            project_path=str(initialized_project),
+        )
+        assert result["all_issues_resolved"] is True
+        assert result["parent_id"] == "TEST-002"
+
+    def test_no_notification_when_issues_remain(self, initialized_project):
+        """No notification when some child issues are still open."""
+        pm_add_issue(
+            parent_id="TEST-002",
+            title="Issue 1",
+            project_path=str(initialized_project),
+        )
+        pm_add_issue(
+            parent_id="TEST-002",
+            title="Issue 2",
+            project_path=str(initialized_project),
+        )
+
+        children = pm_tasks(
+            project_path=str(initialized_project),
+            parent_id="TEST-002",
+        )
+        # Complete only one
+        result = pm_update_task(
+            task_id=children[0]["id"],
+            status="done",
+            project_path=str(initialized_project),
+        )
+        assert "all_issues_resolved" not in result
+
+    def test_no_notification_for_top_level_task(self, initialized_project):
+        """No notification when completing a task with no parent."""
+        result = pm_update_task(
+            task_id="TEST-002",
+            status="done",
+            project_path=str(initialized_project),
+        )
+        assert "all_issues_resolved" not in result

@@ -336,6 +336,14 @@ def pm_blockers(project_path: str | None = None) -> list:
     """ブロッカーと blocked 状態のタスクを一覧。
     project_path=None の場合は全プロジェクトのブロッカーを集計。"""
 
+@mcp.tool()
+def pm_add_issue(parent_id: str, title: str, priority: str = "P1",
+                 description: str = "", tags: list[str] | None = None,
+                 project_path: str | None = None) -> dict:
+    """完了済み/レビュー中のタスクに対してイシュー（子タスク）を追加。
+    phase は親タスクを自動継承。parent_id で紐付け。
+    親タスクが done の場合、自動で review に戻す。"""
+
 # ─── 記録 ───
 
 @mcp.tool()
