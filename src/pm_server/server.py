@@ -12,9 +12,13 @@ from . import storage as _storage
 from .discovery import detect_project_info, discover_projects
 from .memory import MemoryStore
 from .models import (
+    ConfidenceLevel,
     Consequences,
     DailyLogEntry,
     Decision,
+    KnowledgeCategory,
+    KnowledgeRecord,
+    KnowledgeStatus,
     LogCategory,
     Memory,
     MemoryType,
@@ -33,19 +37,23 @@ from .models import (
 from .storage import (
     add_daily_log,
     add_decision,
+    add_knowledge,
     add_task,
     init_pm_directory,
     list_workflow_templates,
+    load_knowledge,
     load_project,
     load_registry,
     load_risks,
     load_tasks,
     load_workflows,
     next_decision_number,
+    next_knowledge_number,
     next_task_number,
     register_project,
     save_project,
     save_registry,
+    update_knowledge,
     update_task,
 )
 from .utils import (
@@ -1013,6 +1021,196 @@ def pm_update_claudemd(project_path: str | None = None) -> dict:
         "template_version": TEMPLATE_VERSION,
         "before": before,
         "after": after,
+    }
+
+
+# ─── Knowledge Records ─────────────────────────────
+
+
+@mcp.tool()
+def pm_record(
+    category: str,
+    title: str,
+    findings: str = "",
+    conclusion: str = "",
+    confidence: str = "medium",
+    sources: list[str] | None = None,
+    tags: str | None = None,
+    task_id: str | None = None,
+    workflow_id: str | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """Record a structured knowledge finding.
+
+    Use this for research results, requirements, trade-off analyses, specs, etc.
+    Sits between casual pm_remember (memory) and formal pm_add_decision (ADR).
+
+    category: research | market | spike | requirement | constraint |
+              tradeoff | risk_analysis | spec | api_design
+    confidence: high | medium | low
+    tags: comma-separated string (e.g. "auth,api,security")
+    """
+    pm_path = _get_pm_path(project_path)
+    project = load_project(pm_path)
+    number = next_knowledge_number(pm_path)
+    record_id = f"KR-{number:03d}"
+
+    # Auto-infer task_id from active in-progress task
+    auto_linked = False
+    if task_id is None:
+        active = _get_active_tasks(pm_path)
+        if len(active) == 1:
+            task_id = active[0].id
+            auto_linked = True
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    record = KnowledgeRecord(
+        id=record_id,
+        category=KnowledgeCategory(category),
+        title=title,
+        confidence=ConfidenceLevel(confidence),
+        findings=findings,
+        conclusion=conclusion,
+        sources=sources or [],
+        tags=tag_list,
+        task_id=task_id,
+        workflow_id=workflow_id,
+    )
+    add_knowledge(pm_path, record)
+
+    result: dict = {
+        "status": "recorded",
+        "record_id": record_id,
+        "category": category,
+        "title": title,
+    }
+    if auto_linked:
+        result["auto_linked_task"] = task_id
+    return result
+
+
+@mcp.tool()
+def pm_knowledge(
+    action: str = "list",
+    record_id: str | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    tag: str | None = None,
+    task_id: str | None = None,
+    workflow_id: str | None = None,
+    new_status: str | None = None,
+    confidence: str | None = None,
+    conclusion: str | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """Query and manage knowledge records.
+
+    action:
+      - list: List records with optional filters (category, status, tag, task_id)
+      - get: Get a specific record by record_id
+      - update: Update a record's status/confidence/conclusion (record_id required)
+      - summary: Get category-wise summary counts
+
+    category filter: research | market | spike | requirement | constraint |
+                     tradeoff | risk_analysis | spec | api_design
+    status filter: draft | validated | superseded
+    """
+    pm_path = _get_pm_path(project_path)
+
+    match action:
+        case "list":
+            records = load_knowledge(pm_path)
+            if category:
+                records = [r for r in records if r.category.value == category]
+            if status:
+                records = [r for r in records if r.status.value == status]
+            if tag:
+                records = [r for r in records if tag in r.tags]
+            if task_id:
+                records = [r for r in records if r.task_id == task_id]
+            if workflow_id:
+                records = [r for r in records if r.workflow_id == workflow_id]
+            return {
+                "count": len(records),
+                "records": [_knowledge_summary(r) for r in records],
+            }
+
+        case "get":
+            if not record_id:
+                return {"status": "error", "message": "record_id required for get"}
+            records = load_knowledge(pm_path)
+            for r in records:
+                if r.id == record_id:
+                    return _knowledge_detail(r)
+            return {"status": "error", "message": f"{record_id} not found"}
+
+        case "update":
+            if not record_id:
+                return {"status": "error", "message": "record_id required for update"}
+            updates: dict = {}
+            if new_status:
+                updates["status"] = KnowledgeStatus(new_status)
+            if confidence:
+                updates["confidence"] = ConfidenceLevel(confidence)
+            if conclusion:
+                updates["conclusion"] = conclusion
+            record = update_knowledge(pm_path, record_id, **updates)
+            return {"status": "updated", "record": _knowledge_summary(record)}
+
+        case "summary":
+            records = load_knowledge(pm_path)
+            by_category: dict[str, int] = {}
+            by_status: dict[str, int] = {}
+            for r in records:
+                by_category[r.category.value] = by_category.get(r.category.value, 0) + 1
+                by_status[r.status.value] = by_status.get(r.status.value, 0) + 1
+            return {
+                "total": len(records),
+                "by_category": by_category,
+                "by_status": by_status,
+            }
+
+        case _:
+            return {
+                "status": "error",
+                "message": f"Unknown action: {action}. Use list/get/update/summary",
+            }
+
+
+def _knowledge_summary(r: KnowledgeRecord) -> dict:
+    """Concise dict for knowledge record listing."""
+    result: dict = {
+        "id": r.id,
+        "category": r.category.value,
+        "title": r.title,
+        "status": r.status.value,
+        "confidence": r.confidence.value,
+        "tags": r.tags,
+    }
+    if r.task_id:
+        result["task_id"] = r.task_id
+    if r.workflow_id:
+        result["workflow_id"] = r.workflow_id
+    return result
+
+
+def _knowledge_detail(r: KnowledgeRecord) -> dict:
+    """Full dict for a single knowledge record."""
+    return {
+        "id": r.id,
+        "category": r.category.value,
+        "title": r.title,
+        "status": r.status.value,
+        "confidence": r.confidence.value,
+        "findings": r.findings,
+        "conclusion": r.conclusion,
+        "sources": r.sources,
+        "tags": r.tags,
+        "task_id": r.task_id,
+        "workflow_id": r.workflow_id,
+        "created": r.created.isoformat(),
+        "updated": r.updated.isoformat(),
     }
 
 
