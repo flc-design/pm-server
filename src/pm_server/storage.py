@@ -23,6 +23,10 @@ from .models import (
     Risk,
     Task,
     TaskNotFoundError,
+    Workflow,
+    WorkflowNotFoundError,
+    WorkflowStep,
+    WorkflowTemplate,
 )
 
 PM_DIR = ".pm"
@@ -319,3 +323,139 @@ def init_pm_directory(project_path: Path) -> Path:
     pm_path.mkdir(exist_ok=True)
     (pm_path / "daily").mkdir(exist_ok=True)
     return pm_path
+
+
+# ─── Workflows ──────────────────────────────────────
+
+BUILTIN_TEMPLATES_DIR = Path(__file__).parent / "templates" / "workflows"
+
+
+def load_workflows(pm_path: Path) -> list[Workflow]:
+    """Load all workflows from workflows.yaml."""
+    data = _load_yaml(pm_path / "workflows.yaml")
+    if data is None or not isinstance(data, dict) or "workflows" not in data:
+        return []
+    return [Workflow(**w) for w in data["workflows"]]
+
+
+def save_workflows(pm_path: Path, workflows: list[Workflow]) -> None:
+    """Save all workflows to workflows.yaml."""
+    _save_yaml(
+        pm_path / "workflows.yaml",
+        {"workflows": [_model_dump(w) for w in workflows]},
+        "workflows.yaml",
+    )
+
+
+def add_workflow(pm_path: Path, workflow: Workflow) -> Workflow:
+    """Append a new workflow and save."""
+    workflows = load_workflows(pm_path)
+    workflows.append(workflow)
+    save_workflows(pm_path, workflows)
+    return workflow
+
+
+def update_workflow(pm_path: Path, workflow_id: str, **updates) -> Workflow:
+    """Update fields on an existing workflow by ID."""
+    workflows = load_workflows(pm_path)
+    for wf in workflows:
+        if wf.id == workflow_id:
+            for key, value in updates.items():
+                if value is not None and hasattr(wf, key):
+                    setattr(wf, key, value)
+            wf.updated = _dt.date.today()
+            save_workflows(pm_path, workflows)
+            return wf
+    raise WorkflowNotFoundError(f"Workflow {workflow_id} not found")
+
+
+def next_workflow_number(pm_path: Path) -> int:
+    """Return the next available workflow number."""
+    workflows = load_workflows(pm_path)
+    if not workflows:
+        return 1
+    numbers = []
+    for w in workflows:
+        parts = w.id.rsplit("-", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            numbers.append(int(parts[1]))
+    return max(numbers, default=0) + 1
+
+
+def load_workflow_template(name: str, pm_path: Path | None = None) -> WorkflowTemplate:
+    """Load a workflow template by name.
+
+    Resolution order:
+    1. Custom: .pm/workflow_templates/{name}.yaml
+    2. Built-in: templates/workflows/{name}.yaml
+    """
+    # Custom template
+    if pm_path:
+        custom_path = pm_path / "workflow_templates" / f"{name}.yaml"
+        if custom_path.exists():
+            data = _load_yaml(custom_path)
+            if data:
+                return _parse_workflow_template(data)
+
+    # Built-in template
+    builtin_path = BUILTIN_TEMPLATES_DIR / f"{name}.yaml"
+    if builtin_path.exists():
+        data = _load_yaml(builtin_path)
+        if data:
+            return _parse_workflow_template(data)
+
+    raise PmServerError(f"Workflow template '{name}' not found")
+
+
+def list_workflow_templates(pm_path: Path | None = None) -> list[dict]:
+    """List all available workflow templates (built-in + custom)."""
+    templates: list[dict] = []
+    seen: set[str] = set()
+
+    # Custom templates (higher priority, listed first)
+    if pm_path:
+        custom_dir = pm_path / "workflow_templates"
+        if custom_dir.is_dir():
+            for f in sorted(custom_dir.glob("*.yaml")):
+                name = f.stem
+                seen.add(name)
+                data = _load_yaml(f)
+                if data:
+                    tmpl = _parse_workflow_template(data)
+                    templates.append({
+                        "name": name,
+                        "description": tmpl.description,
+                        "steps": len(tmpl.steps),
+                        "chain_to": tmpl.chain_to,
+                        "source": "custom",
+                    })
+
+    # Built-in templates
+    if BUILTIN_TEMPLATES_DIR.is_dir():
+        for f in sorted(BUILTIN_TEMPLATES_DIR.glob("*.yaml")):
+            name = f.stem
+            if name in seen:
+                continue  # custom overrides built-in
+            data = _load_yaml(f)
+            if data:
+                tmpl = _parse_workflow_template(data)
+                templates.append({
+                    "name": name,
+                    "description": tmpl.description,
+                    "steps": len(tmpl.steps),
+                    "chain_to": tmpl.chain_to,
+                    "source": "builtin",
+                })
+
+    return templates
+
+
+def _parse_workflow_template(data: dict) -> WorkflowTemplate:
+    """Parse raw YAML data into a WorkflowTemplate."""
+    steps = [WorkflowStep(**s) for s in data.get("steps", [])]
+    return WorkflowTemplate(
+        name=data.get("name", ""),
+        description=data.get("description", ""),
+        chain_to=data.get("chain_to"),
+        steps=steps,
+    )
