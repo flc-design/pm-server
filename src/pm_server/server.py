@@ -1051,7 +1051,6 @@ def pm_record(
     tags: comma-separated string (e.g. "auth,api,security")
     """
     pm_path = _get_pm_path(project_path)
-    project = load_project(pm_path)
     number = next_knowledge_number(pm_path)
     record_id = f"KR-{number:03d}"
 
@@ -1062,6 +1061,16 @@ def pm_record(
         if len(active) == 1:
             task_id = active[0].id
             auto_linked = True
+
+    # Auto-infer workflow_id from active workflow
+    auto_linked_wf = False
+    if workflow_id is None:
+        from .workflow import get_active_workflow
+
+        active_wf = get_active_workflow(pm_path)
+        if active_wf:
+            workflow_id = active_wf.id
+            auto_linked_wf = True
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
@@ -1087,6 +1096,8 @@ def pm_record(
     }
     if auto_linked:
         result["auto_linked_task"] = task_id
+    if auto_linked_wf:
+        result["auto_linked_workflow"] = workflow_id
     return result
 
 

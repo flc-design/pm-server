@@ -24,6 +24,7 @@ from .models import (
 )
 from .storage import (
     add_workflow,
+    load_knowledge,
     load_workflow_template,
     load_workflows,
     next_workflow_number,
@@ -192,6 +193,18 @@ def workflow_status(pm_path: Path, workflow_id: str | None = None) -> dict:
 
     if wf.chain_to:
         result["chain_to"] = wf.chain_to
+
+    # Knowledge records linked to this workflow
+    knowledge = load_knowledge(pm_path)
+    linked = [k for k in knowledge if k.workflow_id == wf.id]
+    if linked:
+        by_cat: dict[str, int] = {}
+        for k in linked:
+            by_cat[k.category.value] = by_cat.get(k.category.value, 0) + 1
+        result["knowledge"] = {
+            "count": len(linked),
+            "by_category": by_cat,
+        }
 
     return result
 
