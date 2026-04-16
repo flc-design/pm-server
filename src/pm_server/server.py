@@ -48,7 +48,6 @@ from .storage import (
     save_registry,
     update_task,
 )
-from .workflow import advance_step, start_workflow, workflow_status
 from .utils import (
     aggregate_task_status,
     calculate_phase_progress,
@@ -57,6 +56,7 @@ from .utils import (
     resolve_project_path,
 )
 from .velocity import calculate_velocity, detect_risks
+from .workflow import advance_step, start_workflow, workflow_status
 
 mcp = FastMCP("pm-server")
 
