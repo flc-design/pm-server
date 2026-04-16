@@ -1,0 +1,110 @@
+# PM Server — Super Research Workflow Template
+# Parallel Research → Depth Check → Fact Check → Cross-Check → Synthesis
+# Uses the super-research skill for multi-perspective investigation.
+# Can be used standalone or chained from discovery workflow.
+
+name: Super Research
+description: >
+  Multi-perspective research workflow using 3 parallel agents
+  (Domain Expert, Critical Analyst, Lateral Thinker),
+  followed by Depth Check (6 dimensions), Fact Check, and Cross-Check.
+  Results are stored as Knowledge Records (pm_record).
+
+steps:
+  - id: scope
+    name: Research Scoping
+    description: >
+      Define the research question, scope, and constraints.
+      Identify the mode (quick/standard/full) based on importance and urgency.
+      Determine which knowledge categories will be produced.
+    tool_hint: pm_remember
+    produces:
+      - research_scope
+
+  # NOTE: parallel_research and depth_check share loop_group "research".
+  # When depth_check scores < 3.0, advance with proceed=False to loop back
+  # to parallel_research for another iteration. The workflow engine resets
+  # all "research" group steps and increments the iteration counter.
+  - id: parallel_research
+    name: Parallel Research (3 Agents)
+    description: >
+      Launch 3 sub-agents in parallel for multi-perspective research:
+      1. Domain Expert — technical accuracy, best practices, prior art
+      2. Critical Analyst — risks, trade-offs, hidden assumptions, failure patterns
+      3. Lateral Thinker — cross-domain patterns, overlooked options, creative solutions
+      Use Claude Code's Agent tool to run them concurrently.
+    skill_hint: super-research
+    agent_hint: >
+      Launch 3 agents in parallel using the Agent tool:
+      Agent 1 (Domain Expert): Deep technical research on the topic.
+      Agent 2 (Critical Analyst): Critical evaluation of findings and risks.
+      Agent 3 (Lateral Thinker): Cross-domain insights and creative alternatives.
+      Send all 3 Agent calls in a single message for concurrent execution.
+    loop: true
+    loop_group: research
+    consumes:
+      - research_scope
+    produces:
+      - research_findings
+
+  - id: depth_check
+    name: Depth Check (6 Dimensions)
+    description: >
+      Evaluate combined research findings across 6 quality dimensions:
+      1. Accuracy — factually correct and verifiable
+      2. Completeness — covers all important aspects
+      3. Currency — information is up-to-date
+      4. Relevance — appropriate for the research question
+      5. Bias — not favoring any particular position
+      6. Source Quality — based on reliable sources
+      Score each 1-5. Average >= 4.0 → high confidence, >= 3.0 → medium, < 3.0 → re-research.
+    agent_hint: Use a review sub-agent for independent quality evaluation.
+    loop: true
+    loop_group: research
+    consumes:
+      - research_findings
+    produces:
+      - quality_assessment
+
+  - id: fact_check
+    name: Fact Check
+    description: >
+      Verify key claims and facts from the research findings.
+      Check for contradictions between agent outputs.
+      Flag any unverifiable claims or outdated information.
+      Use web search if available to validate critical facts.
+    consumes:
+      - research_findings
+      - quality_assessment
+    produces:
+      - verified_findings
+
+  - id: cross_check
+    name: Cross-Check
+    description: >
+      Final consistency check across all agent outputs.
+      Identify areas of agreement and disagreement.
+      Resolve contradictions and synthesize a unified view.
+      Flag remaining uncertainties for user decision.
+    agent_hint: Use a review sub-agent for independent cross-validation.
+    consumes:
+      - verified_findings
+    produces:
+      - cross_checked_findings
+
+  - id: synthesis
+    name: Synthesis & Recording
+    description: >
+      Synthesize all findings into a structured Knowledge Record.
+      Record the result using pm_record with appropriate category
+      (research/market/spike/tradeoff/risk_analysis).
+      Set confidence level based on Depth Check scores.
+      Present key findings and recommendations to the user.
+    tool_hint: pm_record
+    gate: user_approval
+    required_artifacts:
+      - KR
+    consumes:
+      - cross_checked_findings
+    produces:
+      - KR

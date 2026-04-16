@@ -65,6 +65,8 @@
     <th>Progress</th>
     <th>Tasks</th>
     <th>Blocked</th>
+    <th>Workflows</th>
+    <th>Knowledge</th>
   </tr>
   {% for p in projects %}
   <tr>
@@ -76,6 +78,8 @@
     </td>
     <td>{{ p.tasks_done }}/{{ p.tasks_total }}</td>
     <td>{% if p.tasks_blocked > 0 %}<span class="blocker-count">{{ p.tasks_blocked }}</span>{% else %}0{% endif %}</td>
+    <td>{% if p.active_workflows > 0 %}<span style="color:var(--accent)">{{ p.active_workflows }} active</span>{% else %}&mdash;{% endif %}</td>
+    <td>{% if p.knowledge_count > 0 %}{{ p.knowledge_count }}{% else %}&mdash;{% endif %}</td>
   </tr>
   {% endfor %}
 </table>

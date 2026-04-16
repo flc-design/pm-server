@@ -1,11 +1,11 @@
 # pm-server — Claude Code プロジェクト管理システム設計書
 
-**Version**: 0.3.0
-**Date**: 2026-04-08
+**Version**: 0.5.0
+**Date**: 2026-04-16
 **Author**: Shinichi Nakazato / FLC design co., ltd.
-**Status**: Implemented (リネーム移行中)
+**Status**: Implemented (Phase 1-7 complete)
 **License**: MIT
-**PyPI**: `pm-server` (予定)
+**PyPI**: `pm-server`
 **GitHub**: `github.com/flc-design/pm-server`
 
 ---
@@ -17,6 +17,8 @@
 | 0.1.0 | 2026-04-03 | 初版設計 |
 | 0.2.0 | 2026-04-03 | MCP ツール詳細化、パッケージ構成追加 |
 | 0.3.0 | 2026-04-08 | パッケージ名 `pm-agent` → `pm-server` に変更。installer.py を `claude mcp add` 方式に修正。pm_discover デフォルトパス修正。migrate コマンド追加。実装完了状況を反映 |
+| 0.4.0 | 2026-04-15 | Memory Layer (Phase 1-4) 完了。SQLite + FTS5 セッションメモリ、横断検索、運用ツール実装。子イシュー機能追加。PyPI v0.3.3 公開 |
+| 0.5.0 | 2026-04-16 | Workflow Engine (Phase 5)、Knowledge Records (Phase 6)、Super Research & Skill エコシステム (Phase 7) 実装。ダッシュボードにワークフロー進捗・知識マップ追加。30 MCP ツール、406テスト |
 
 ---
 
@@ -757,51 +759,47 @@ Issues = "https://github.com/flc-design/pm-server/issues"
 
 ### Phase 1〜4: 完了済み ✅
 
-全15 MCP ツール実装、115テスト全パス、4プロジェクトで実運用中。
-詳細は `docs/status.md` を参照。
+Memory Layer 基盤、セッション継続、横断検索・自動化、運用ツール。
+全23 MCP ツール、260+テスト。PyPI v0.3.3 公開済み。
 
-### Phase 5: リネーム + 公開（現在進行中）
+### Phase 5: Workflow Engine ✅
 
-- [x] README.md 書き直し（英語版 + 日本語版）
-- [x] 設計書更新（この文書）
-- [ ] パッケージリネーム（pm_agent → pm_server）
-- [ ] migrate コマンド実装
-- [ ] Git コミット整理
-- [ ] GitHub リポジトリ push（github.com/flc-design/pm-server）
-- [ ] `.github/workflows/test.yml` (pytest CI)
-- [ ] PyPI 公開
+テンプレートベースのワークフローエンジン。状態マシンでステップ進行を管理。
 
-#### リネーム作業詳細
+- ワークフローテンプレート（Discovery / Development）
+- ループ構造（brainstorm loop_group）
+- ユーザーゲート（gate: user_approval）
+- ワークフロー連鎖（chain_to: development）
+- 10タスク全完了
 
-以下を一括で変更する：
+### Phase 6: Knowledge Records ✅
 
-| 対象 | 変更前 | 変更後 |
-|---|---|---|
-| ディレクトリ | `src/pm_agent/` | `src/pm_server/` |
-| pyproject.toml name | `pm-agent` | `pm-server` |
-| pyproject.toml scripts | `pm-agent = "pm_agent.__main__:cli"` | `pm-server = "pm_server.__main__:cli"` |
-| pyproject.toml URLs | `nakashin/pm-agent` | `flc-design/pm-server` |
-| 全 import 文 | `from pm_agent` / `import pm_agent` | `from pm_server` / `import pm_server` |
-| server.py FastMCP 名 | `FastMCP("pm-agent")` | `FastMCP("pm-server")` |
-| テスト内参照 | `pm_agent` | `pm_server` |
-| CLAUDE.md | `pm-agent` 言及 | `pm-server` に更新 |
-| skill/SKILL.md | `pm-agent` 言及 | `pm-server` に更新 |
+カジュアルな Memory と フォーマルな ADR の間を埋める構造化知識レイヤー。
 
-#### migrate コマンド実装
+- 9カテゴリ（research, market, spike, requirement, constraint, tradeoff, risk_analysis, spec, api_design）
+- ワークフローステップとの produces/consumes 連携
+- pm_record / pm_knowledge ツール
+- 6タスク全完了
 
-```python
-@cli.command()
-def migrate():
-    """pm-agent からの移行。"""
-    from .installer import migrate_from_pm_agent
-    migrate_from_pm_agent()
-```
+### Phase 7: Super Research & Skill エコシステム ✅
 
-実行内容:
-1. `claude mcp remove pm-agent --scope user`
-2. `claude mcp add --scope user pm-server -- <path> serve`
-3. `~/.pm/registry.yaml` の整合性チェック
-4. 各プロジェクトの `CLAUDE.md` 内の `pm-agent` 言及を警告
+- Super Research スキル定義（skill/super-research/SKILL.md）
+  - 3並列エージェント（Domain Expert, Critical Analyst, Lateral Thinker）
+  - Depth Check（6次元品質評価）
+  - Fact Check + Cross-Check
+  - 3モード（quick / standard / full）
+- super-research ワークフローテンプレート
+- ダッシュボード拡張（ワークフロー進捗 + 知識マップ）
+- ドキュメント更新（本文書 v0.5.0）
+- 4タスク全完了
+
+### 現在の規模
+
+- **30 MCP ツール** (server.py)
+- **17 Pydantic モデル + 15 Enum** (models.py)
+- **406+ テスト** (pytest)
+- **3 ワークフローテンプレート** (discovery / development / super-research)
+- **1 スキル定義** (super-research)
 
 ---
 

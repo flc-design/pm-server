@@ -7,13 +7,15 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .models import TaskStatus
+from .models import TaskStatus, WorkflowStatus, WorkflowStepStatus
 from .storage import (
     load_decisions,
+    load_knowledge,
     load_project,
     load_registry,
     load_risks,
     load_tasks,
+    load_workflows,
 )
 from .utils import aggregate_task_status, calculate_phase_progress
 from .velocity import calculate_velocity, detect_risks
@@ -52,6 +54,53 @@ def render_project_dashboard(pm_path: Path, format: str = "html") -> str:
     # Blocked tasks
     blocked = [t for t in tasks if t.status == TaskStatus.BLOCKED]
 
+    # Workflows
+    workflows = load_workflows(pm_path)
+    active_workflows = [w for w in workflows if w.status == WorkflowStatus.ACTIVE]
+    workflow_data = []
+    for wf in workflows:
+        done_steps = sum(
+            1
+            for s in wf.steps
+            if s.status in (WorkflowStepStatus.DONE, WorkflowStepStatus.SKIPPED)
+        )
+        total_steps = len(wf.steps)
+        pct = round(done_steps / total_steps * 100) if total_steps > 0 else 0
+        current_step_name = ""
+        if wf.status == WorkflowStatus.ACTIVE and wf.current_step_index < total_steps:
+            current_step_name = wf.steps[wf.current_step_index].name
+        workflow_data.append(
+            {
+                "id": wf.id,
+                "name": wf.name,
+                "feature": wf.feature,
+                "status": wf.status.value,
+                "done_steps": done_steps,
+                "total_steps": total_steps,
+                "pct": pct,
+                "current_step": current_step_name,
+                "steps": [
+                    {
+                        "name": s.name,
+                        "status": s.status.value,
+                    }
+                    for s in wf.steps
+                ],
+            }
+        )
+
+    # Knowledge records
+    knowledge = load_knowledge(pm_path)
+    knowledge_by_category: dict[str, int] = {}
+    knowledge_by_status: dict[str, int] = {}
+    for kr in knowledge:
+        knowledge_by_category[kr.category.value] = (
+            knowledge_by_category.get(kr.category.value, 0) + 1
+        )
+        knowledge_by_status[kr.status.value] = (
+            knowledge_by_status.get(kr.status.value, 0) + 1
+        )
+
     context = {
         "project": project,
         "tasks": tasks,
@@ -64,6 +113,11 @@ def render_project_dashboard(pm_path: Path, format: str = "html") -> str:
         + [
             {"type": "manual", "title": r.title, "severity": r.severity.value} for r in risks_manual
         ],
+        "workflows": workflow_data,
+        "active_workflows": len(active_workflows),
+        "knowledge_total": len(knowledge),
+        "knowledge_by_category": knowledge_by_category,
+        "knowledge_by_status": knowledge_by_status,
         "today": date.today().isoformat(),
     }
 
@@ -110,6 +164,24 @@ def _render_project_text(ctx: dict) -> str:
     vel = ctx["velocity"]
     lines.append(f"Velocity: {vel['average']} tasks/week ({vel['trend']})")
 
+    if ctx.get("workflows"):
+        lines.append("")
+        lines.append("Workflows:")
+        for wf in ctx["workflows"]:
+            status_icon = "*" if wf["status"] == "active" else " "
+            lines.append(
+                f"  {status_icon} {wf['id']}: {wf['feature']} "
+                f"({wf['done_steps']}/{wf['total_steps']}) [{wf['status']}]"
+            )
+            if wf["current_step"]:
+                lines.append(f"    Current: {wf['current_step']}")
+
+    if ctx.get("knowledge_total", 0) > 0:
+        lines.append("")
+        lines.append(f"Knowledge Records: {ctx['knowledge_total']}")
+        for cat, count in sorted(ctx.get("knowledge_by_category", {}).items()):
+            lines.append(f"  {cat}: {count}")
+
     if ctx["risks"]:
         lines.append("")
         lines.append("Risks:")
@@ -128,7 +200,7 @@ def render_portfolio_dashboard(format: str = "html") -> str:
     projects_data = []
 
     for entry in registry.projects:
-        pm_path = Path(entry.path) / ".pm"
+        pm_path = Path(entry.path).resolve() / ".pm"
         if not (pm_path / "project.yaml").exists():
             continue
 
@@ -137,6 +209,11 @@ def render_portfolio_dashboard(format: str = "html") -> str:
         done = sum(1 for t in tasks if t.status == TaskStatus.DONE)
         blocked = sum(1 for t in tasks if t.status == TaskStatus.BLOCKED)
         total = len(tasks)
+
+        workflows = load_workflows(pm_path)
+        active_wf = sum(1 for w in workflows if w.status == WorkflowStatus.ACTIVE)
+
+        knowledge = load_knowledge(pm_path)
 
         projects_data.append(
             {
@@ -148,6 +225,8 @@ def render_portfolio_dashboard(format: str = "html") -> str:
                 "tasks_done": done,
                 "tasks_blocked": blocked,
                 "progress_pct": round(done / total * 100) if total > 0 else 0,
+                "active_workflows": active_wf,
+                "knowledge_count": len(knowledge),
             }
         )
 
@@ -180,12 +259,18 @@ def _render_portfolio_text(ctx: dict) -> str:
         return "\n".join(lines)
 
     # Header
-    lines.append(f"  {'Project':<25} {'Status':<14} {'Progress':<12} {'Blocked':>7}")
-    lines.append(f"  {'─' * 25} {'─' * 14} {'─' * 12} {'─' * 7}")
+    hdr = f"  {'Project':<25} {'Status':<14} {'Progress':<12} {'Blocked':>7} {'WF':>3} {'KR':>3}"
+    sep = f"  {'─' * 25} {'─' * 14} {'─' * 12} {'─' * 7} {'─' * 3} {'─' * 3}"
+    lines.append(hdr)
+    lines.append(sep)
 
     for p in ctx["projects"]:
         name = (p["display_name"] or p["name"])[:24]
         prog = f"{p['tasks_done']}/{p['tasks_total']}"
-        lines.append(f"  {name:<25} {p['status']:<14} {prog:<12} {p['tasks_blocked']:>7}")
+        wf = p.get("active_workflows", 0)
+        kr = p.get("knowledge_count", 0)
+        lines.append(
+            f"  {name:<25} {p['status']:<14} {prog:<12} {p['tasks_blocked']:>7} {wf:>3} {kr:>3}"
+        )
 
     return "\n".join(lines)

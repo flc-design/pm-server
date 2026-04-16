@@ -28,7 +28,10 @@ Track tasks, visualize progress, record decisions — all through natural langua
 
 ## Features
 
-- **23 MCP tools** — task CRUD, child issues, status, blockers, velocity, dashboard, ADR, session memory, and more
+- **30 MCP tools** — task CRUD, child issues, status, blockers, velocity, dashboard, ADR, session memory, workflows, knowledge records, and more
+- **Workflow engine** — template-based development workflows with loops, user gates, and chaining (Discovery → Development)
+- **Knowledge records** — structured findings between casual memory and formal ADR (research, tradeoff, spec, etc.)
+- **Super Research skill** — 3 parallel agents (Domain Expert, Critical Analyst, Lateral Thinker) + Depth Check (6 dimensions) + Fact Check + Cross-Check
 - **Session memory** — SQLite + FTS5 full-text search. Memories persist across sessions and link to tasks/decisions
 - **Cross-project search** — search memories across all projects via a global index
 - **Natural language** — say "進捗は？" or "what's next?" instead of memorizing commands
@@ -97,7 +100,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 ---
 
-## MCP Tools (23 tools)
+## MCP Tools (30 tools)
 
 ### Project Management
 
@@ -130,7 +133,7 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 
 | Tool | Description |
 |---|---|
-| `pm_dashboard` | HTML dashboard (single project or portfolio view) |
+| `pm_dashboard` | HTML dashboard with workflow progress + knowledge map (single project or portfolio) |
 
 ### Discovery
 
@@ -151,6 +154,23 @@ pm-server automatically detects project info from `package.json`, `pyproject.tom
 | `pm_memory_stats` | Memory DB statistics (total, by type, DB size) |
 | `pm_memory_cleanup` | Clean up old memories (dry-run supported) |
 
+### Knowledge Records
+
+| Tool | Description |
+|---|---|
+| `pm_record` | Record structured knowledge (research / market / spike / tradeoff / spec / api_design) |
+| `pm_knowledge` | Query, filter, update, and summarize knowledge records |
+
+### Workflow Engine
+
+| Tool | Description |
+|---|---|
+| `pm_workflow_start` | Start a workflow from a template (development / discovery / super-research) |
+| `pm_workflow_status` | View current step, progress, and guidance for active workflow |
+| `pm_workflow_advance` | Advance to next step with artifacts and notes; supports loops and skip |
+| `pm_workflow_list` | List all workflow instances with status filter |
+| `pm_workflow_templates` | List available workflow templates (built-in + custom) |
+
 ### Maintenance
 
 | Tool | Description |
@@ -169,9 +189,12 @@ your-project/
     ├── project.yaml        # Project metadata
     ├── tasks.yaml          # Tasks with status, priority, dependencies
     ├── decisions.yaml      # Architecture Decision Records (ADR)
+    ├── knowledge.yaml      # Structured knowledge records
+    ├── workflows.yaml      # Workflow instances and state
     ├── milestones.yaml     # Milestone definitions
     ├── risks.yaml          # Risks and blockers
     ├── memory.db           # Session memories (SQLite + FTS5)
+    ├── workflow_templates/  # Custom workflow templates (optional)
     └── daily/
         └── 2026-04-08.yaml # Auto-generated daily log
 
@@ -327,24 +350,26 @@ Claude Code Session
   │
   ├── CLAUDE.md auto-action rules
   ├── PostToolUse hooks (auto-installed)
+  ├── Skills (super-research, etc.)
   │
   └── MCP Server (stdio)
         └── pm-server serve
               │
-              ├── server.py    → 23 MCP tools (FastMCP)
-              ├── models.py    → Pydantic v2 data models
+              ├── server.py    → 30 MCP tools (FastMCP)
+              ├── models.py    → Pydantic v2 data models (17 models, 15 enums)
               ├── storage.py   → YAML read/write
+              ├── workflow.py  → Workflow engine (state machine)
               ├── memory.py    → SQLite memory store + FTS5 search
               ├── recall.py    → Session context builder (token-budgeted)
               ├── hooks.py     → Claude Code hook handler + installer
               ├── context.py   → CLI context injection
               ├── velocity.py  → Velocity calculation & risk detection
-              ├── dashboard.py → HTML/text dashboard (Jinja2)
+              ├── dashboard.py → HTML/text dashboard (Jinja2) + workflow progress + knowledge map
               ├── discovery.py → Auto-detect project info
               └── installer.py → claude mcp add wrapper
                     │
-                    ├── project-A/.pm/ (YAML + memory.db)
-                    ├── project-B/.pm/ (YAML + memory.db)
+                    ├── project-A/.pm/ (YAML + workflows + knowledge + memory.db)
+                    ├── project-B/.pm/ (YAML + workflows + knowledge + memory.db)
                     └── ~/.pm/registry.yaml + memory.db
 ```
 
@@ -392,7 +417,7 @@ Your `.pm/` data directories are **unchanged** — no data migration needed.
 git clone https://github.com/flc-design/pm-server.git
 cd pm-server
 pip install -e ".[dev]"
-pytest                  # 260+ tests
+pytest                  # 400+ tests
 ruff check src/         # Lint
 ruff format src/        # Format
 ```

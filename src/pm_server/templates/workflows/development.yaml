@@ -38,8 +38,8 @@ steps:
     description: >
       Write a detailed specification for the feature.
       Define interfaces, data models, edge cases, and error handling.
-      Use a skill or sub-agent for structured spec generation.
-    skill_hint: Use a spec-writing skill if available.
+      For complex specs requiring research, use the super-research skill first.
+    skill_hint: Use super-research skill for technical spikes; use a spec-writing skill for structured output.
     agent_hint: Use a sub-agent for complex specifications.
     consumes:
       - ADR

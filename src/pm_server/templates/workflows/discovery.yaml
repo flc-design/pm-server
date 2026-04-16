@@ -15,7 +15,9 @@ steps:
     description: >
       Investigate the topic, gather relevant information, explore existing solutions,
       and identify key considerations. Use multiple sources and perspectives.
+      For deep research, use the super-research skill (3 parallel agents + quality checks).
     tool_hint: pm_remember
+    skill_hint: Use super-research skill for comprehensive multi-perspective investigation.
     agent_hint: Use sub-agents for parallel research if the topic is broad.
     loop: true
     loop_group: brainstorm

@@ -250,6 +250,21 @@ class TestWorkflowTemplates:
         loop_steps = [s for s in tmpl.steps if s.loop_group == "brainstorm"]
         assert len(loop_steps) == 3
 
+    def test_load_builtin_super_research(self):
+        tmpl = load_workflow_template("super-research")
+        assert tmpl.name == "Super Research"
+        assert len(tmpl.steps) == 6
+        assert tmpl.steps[0].id == "scope"
+        assert tmpl.steps[-1].id == "synthesis"
+        assert tmpl.steps[-1].gate == "user_approval"
+        # Check research loop group
+        loop_steps = [s for s in tmpl.steps if s.loop_group == "research"]
+        assert len(loop_steps) == 2
+        # Skill hint on parallel_research
+        research_step = next(s for s in tmpl.steps if s.id == "parallel_research")
+        assert research_step.skill_hint is not None
+        assert "super-research" in research_step.skill_hint
+
     def test_load_nonexistent_template(self):
         with pytest.raises(PmServerError, match="not found"):
             load_workflow_template("nonexistent")
@@ -278,6 +293,7 @@ class TestWorkflowTemplates:
         names = [t["name"] for t in templates]
         assert "development" in names
         assert "discovery" in names
+        assert "super-research" in names
         for t in templates:
             assert t["source"] == "builtin"
             assert t["steps"] > 0
