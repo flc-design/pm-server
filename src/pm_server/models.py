@@ -93,6 +93,36 @@ class MemoryType(StrEnum):
     LESSON = "lesson"
 
 
+class KnowledgeCategory(StrEnum):
+    """Knowledge record category."""
+
+    RESEARCH = "research"
+    MARKET = "market"
+    SPIKE = "spike"
+    REQUIREMENT = "requirement"
+    CONSTRAINT = "constraint"
+    TRADEOFF = "tradeoff"
+    RISK_ANALYSIS = "risk_analysis"
+    SPEC = "spec"
+    API_DESIGN = "api_design"
+
+
+class KnowledgeStatus(StrEnum):
+    """Knowledge record lifecycle status."""
+
+    DRAFT = "draft"
+    VALIDATED = "validated"
+    SUPERSEDED = "superseded"
+
+
+class ConfidenceLevel(StrEnum):
+    """Confidence level for knowledge records."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class WorkflowStepStatus(StrEnum):
     """Workflow step lifecycle status."""
 
@@ -132,6 +162,10 @@ class DecisionNotFoundError(PmServerError):
 
 class WorkflowNotFoundError(PmServerError):
     """Workflow ID does not exist."""
+
+
+class KnowledgeNotFoundError(PmServerError):
+    """Knowledge record ID does not exist."""
 
 
 # ─── Data Models ─────────────────────────────────────
@@ -263,7 +297,33 @@ class Registry(BaseModel):
     projects: list[RegistryEntry] = Field(default_factory=list)
 
 
-# ─── Memory Layer Models ───────────���────────────
+# ─── Knowledge Records ─────────────────────────────
+
+
+class KnowledgeRecord(BaseModel):
+    """A structured knowledge record.
+
+    Sits between casual Memory (observation/insight/lesson) and formal ADR.
+    Used for research findings, requirements, trade-off analyses, specs, etc.
+    Stored in .pm/knowledge.yaml.
+    """
+
+    id: str
+    category: KnowledgeCategory
+    title: str
+    status: KnowledgeStatus = KnowledgeStatus.DRAFT
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    findings: str = ""
+    conclusion: str = ""
+    sources: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    task_id: str | None = None
+    workflow_id: str | None = None
+    created: _Date = Field(default_factory=_dt.date.today)
+    updated: _Date = Field(default_factory=_dt.date.today)
+
+
+# ─── Memory Layer Models ──────────────────────────
 
 
 class Memory(BaseModel):
