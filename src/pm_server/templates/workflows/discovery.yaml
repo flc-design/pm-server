@@ -1,0 +1,75 @@
+# PM Server — Discovery Workflow Template
+# Brainstorming → Research → Fact Check → User Gate → Cross-Check → Direction Confirmed
+# Chains to "development" workflow on completion.
+
+name: Discovery
+description: >
+  Brainstorming and research workflow. Iterates through research loops
+  until the user approves the direction, then chains to development.
+
+chain_to: development
+
+steps:
+  - id: research
+    name: Research & Investigation
+    description: >
+      Investigate the topic, gather relevant information, explore existing solutions,
+      and identify key considerations. Use multiple sources and perspectives.
+    tool_hint: pm_remember
+    agent_hint: Use sub-agents for parallel research if the topic is broad.
+    loop: true
+    loop_group: brainstorm
+    produces:
+      - research_findings
+      - market_analysis
+
+  - id: fact_check
+    name: Fact Check
+    description: >
+      Verify the research findings. Check for accuracy, currency, and relevance.
+      Flag any contradictions or gaps in the research.
+    loop: true
+    loop_group: brainstorm
+    consumes:
+      - research_findings
+    produces:
+      - verified_findings
+
+  - id: proposal
+    name: Propose Direction
+    description: >
+      Present findings and proposed direction to the user.
+      Summarize key insights, trade-offs, and recommendations.
+      Wait for user approval before proceeding.
+    gate: user_approval
+    loop: true
+    loop_group: brainstorm
+    consumes:
+      - verified_findings
+    produces:
+      - direction_proposal
+
+  - id: cross_check
+    name: Cross-Check
+    description: >
+      Final validation of the approved direction. Check for consistency,
+      feasibility, and alignment with project goals. Identify any remaining risks.
+    agent_hint: Use a review sub-agent for independent verification.
+    consumes:
+      - direction_proposal
+    produces:
+      - validated_direction
+
+  - id: confirm
+    name: Confirm Direction
+    description: >
+      Finalize the direction. Record the decision as an ADR if significant.
+      Prepare to chain into the development workflow.
+    tool_hint: pm_add_decision
+    gate: user_approval
+    required_artifacts:
+      - ADR
+    consumes:
+      - validated_direction
+    produces:
+      - ADR

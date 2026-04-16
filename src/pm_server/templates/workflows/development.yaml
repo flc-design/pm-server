@@ -1,0 +1,118 @@
+# PM Server — Development Workflow Template
+# ADR → Tasks → Spec → Plan → Check → Implement → Test → Quality → Issues
+
+name: Development
+description: >
+  Full development workflow from design decision through implementation,
+  testing, and quality review. Follows the pattern:
+  ADR → task breakdown → spec → plan → cross-check → implement → test → quality → issues.
+
+steps:
+  - id: decision
+    name: Architecture Decision
+    description: >
+      Record the design decision as an ADR. Define context, decision rationale,
+      and consequences (positive/negative/mitigations).
+    tool_hint: pm_add_decision
+    required_artifacts:
+      - ADR
+    produces:
+      - ADR
+
+  - id: tasks
+    name: Task Breakdown
+    description: >
+      Break the feature into concrete, actionable tasks.
+      Set priorities, estimate effort, and define acceptance criteria.
+      Register all tasks in pm-server.
+    tool_hint: pm_add_task
+    required_artifacts:
+      - task
+    consumes:
+      - ADR
+    produces:
+      - task
+
+  - id: spec
+    name: Specification
+    description: >
+      Write a detailed specification for the feature.
+      Define interfaces, data models, edge cases, and error handling.
+      Use a skill or sub-agent for structured spec generation.
+    skill_hint: Use a spec-writing skill if available.
+    agent_hint: Use a sub-agent for complex specifications.
+    consumes:
+      - ADR
+      - task
+    produces:
+      - spec
+
+  - id: plan
+    name: Implementation Plan
+    description: >
+      Design the implementation plan. Define file changes, module structure,
+      dependency order, and migration strategy if needed.
+      Use Claude Code's plan mode for structured planning.
+    skill_hint: Use plan mode for structured implementation planning.
+    consumes:
+      - spec
+      - task
+    produces:
+      - plan
+
+  - id: check
+    name: Cross-Check
+    description: >
+      Review the spec and plan for completeness, consistency, and feasibility.
+      Check for missing edge cases, security concerns, and performance implications.
+      Get a second opinion from a review sub-agent.
+    agent_hint: Use a review sub-agent for independent verification.
+    gate: user_approval
+    consumes:
+      - spec
+      - plan
+    produces:
+      - review_report
+
+  - id: implement
+    name: Implementation
+    description: >
+      Implement the feature according to the plan.
+      Follow the task order, write clean code, and commit atomically per task.
+      Update task status as you progress.
+    tool_hint: pm_update_task
+    consumes:
+      - plan
+      - task
+
+  - id: test
+    name: Testing
+    description: >
+      Write and run tests for the implemented feature.
+      Cover happy path, edge cases, and error scenarios.
+      Use a debug sub-agent for complex test failures.
+    agent_hint: Use a debug sub-agent for hard-to-diagnose test failures.
+    consumes:
+      - spec
+
+  - id: quality
+    name: Quality Review
+    description: >
+      Final quality review. Check code style, test coverage, documentation,
+      security, and performance. Run linters and type checkers.
+      Verify acceptance criteria from the task definitions.
+    gate: user_approval
+    consumes:
+      - spec
+      - task
+
+  - id: issues
+    name: Issue Registration
+    description: >
+      Register any remaining issues, bugs, or follow-up tasks found during
+      quality review. Link issues to parent tasks using pm_add_issue.
+      Skip this step if no issues were found.
+    tool_hint: pm_add_issue
+    optional: true
+    produces:
+      - issue
