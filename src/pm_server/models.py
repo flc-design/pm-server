@@ -93,6 +93,24 @@ class MemoryType(StrEnum):
     LESSON = "lesson"
 
 
+class WorkflowStepStatus(StrEnum):
+    """Workflow step lifecycle status."""
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    DONE = "done"
+    SKIPPED = "skipped"
+
+
+class WorkflowStatus(StrEnum):
+    """Workflow instance lifecycle status."""
+
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    PAUSED = "paused"
+    ABANDONED = "abandoned"
+
+
 # ─── Exceptions ──────────────────────────────────────
 
 
@@ -110,6 +128,10 @@ class TaskNotFoundError(PmServerError):
 
 class DecisionNotFoundError(PmServerError):
     """Decision ID does not exist."""
+
+
+class WorkflowNotFoundError(PmServerError):
+    """Workflow ID does not exist."""
 
 
 # ─── Data Models ─────────────────────────────────────
@@ -270,3 +292,74 @@ class SessionSummary(BaseModel):
     pending: list[str] = Field(default_factory=list)
     created_at: str = ""
     project: str = ""
+
+
+# ─── Workflow Models ────────────────────────────────
+
+
+class WorkflowStep(BaseModel):
+    """A single step in a workflow.
+
+    Used both in templates (definition) and instances (runtime state).
+    Template fields define the step's behavior and hints.
+    Runtime fields (status, artifacts, iteration, notes) track execution state.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    status: WorkflowStepStatus = WorkflowStepStatus.PENDING
+
+    # Step behavior
+    loop: bool = False
+    loop_group: str | None = None
+    gate: str | None = None  # e.g. "user_approval"
+    optional: bool = False
+
+    # Hints for Claude — which tool/skill/agent to use
+    tool_hint: str | None = None
+    skill_hint: str | None = None
+    agent_hint: str | None = None
+
+    # Knowledge integration (Phase 6)
+    required_artifacts: list[str] = Field(default_factory=list)
+    produces: list[str] = Field(default_factory=list)
+    consumes: list[str] = Field(default_factory=list)
+
+    # Runtime state
+    artifacts: list[str] = Field(default_factory=list)
+    iteration: int = 0
+    notes: str = ""
+
+
+class WorkflowTemplate(BaseModel):
+    """Blueprint for creating workflow instances.
+
+    Templates define the steps and their configuration.
+    Stored as YAML in templates/workflows/ (built-in) or .pm/workflow_templates/ (custom).
+    """
+
+    name: str
+    description: str = ""
+    chain_to: str | None = None
+    steps: list[WorkflowStep] = Field(default_factory=list)
+
+
+class Workflow(BaseModel):
+    """A workflow instance created from a template.
+
+    Tracks the execution state of a feature development workflow.
+    Each step progresses through pending → active → done/skipped.
+    Supports loops (brainstorming), gates (user approval), and chaining.
+    """
+
+    id: str
+    name: str
+    feature: str
+    template: str
+    steps: list[WorkflowStep] = Field(default_factory=list)
+    current_step_index: int = 0
+    status: WorkflowStatus = WorkflowStatus.ACTIVE
+    chain_to: str | None = None
+    created: _Date = Field(default_factory=_dt.date.today)
+    updated: _Date = Field(default_factory=_dt.date.today)
