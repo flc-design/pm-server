@@ -15,6 +15,8 @@ from .models import (
     DailyLog,
     DailyLogEntry,
     Decision,
+    KnowledgeNotFoundError,
+    KnowledgeRecord,
     Milestone,
     PmServerError,
     Project,
@@ -241,6 +243,61 @@ def next_risk_number(pm_path: Path) -> int:
         return 1
     numbers = []
     for r in risks:
+        parts = r.id.rsplit("-", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            numbers.append(int(parts[1]))
+    return max(numbers, default=0) + 1
+
+
+# ─── Knowledge Records ──────────────────────────────
+
+
+def load_knowledge(pm_path: Path) -> list[KnowledgeRecord]:
+    """Load all knowledge records from knowledge.yaml."""
+    data = _load_yaml(pm_path / "knowledge.yaml")
+    if data is None or not isinstance(data, dict) or "knowledge" not in data:
+        return []
+    return [KnowledgeRecord(**k) for k in data["knowledge"]]
+
+
+def save_knowledge(pm_path: Path, records: list[KnowledgeRecord]) -> None:
+    """Save all knowledge records to knowledge.yaml."""
+    _save_yaml(
+        pm_path / "knowledge.yaml",
+        {"knowledge": [_model_dump(r) for r in records]},
+        "knowledge.yaml",
+    )
+
+
+def add_knowledge(pm_path: Path, record: KnowledgeRecord) -> KnowledgeRecord:
+    """Append a new knowledge record and save."""
+    records = load_knowledge(pm_path)
+    records.append(record)
+    save_knowledge(pm_path, records)
+    return record
+
+
+def update_knowledge(pm_path: Path, record_id: str, **updates) -> KnowledgeRecord:
+    """Update fields on an existing knowledge record by ID."""
+    records = load_knowledge(pm_path)
+    for rec in records:
+        if rec.id == record_id:
+            for key, value in updates.items():
+                if value is not None and hasattr(rec, key):
+                    setattr(rec, key, value)
+            rec.updated = _dt.date.today()
+            save_knowledge(pm_path, records)
+            return rec
+    raise KnowledgeNotFoundError(f"Knowledge record {record_id} not found")
+
+
+def next_knowledge_number(pm_path: Path) -> int:
+    """Return the next available knowledge record number."""
+    records = load_knowledge(pm_path)
+    if not records:
+        return 1
+    numbers = []
+    for r in records:
         parts = r.id.rsplit("-", 1)
         if len(parts) == 2 and parts[1].isdigit():
             numbers.append(int(parts[1]))
