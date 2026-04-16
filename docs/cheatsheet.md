@@ -85,80 +85,112 @@ Claude Code session:
 
 ---
 
-## Common Patterns
+## Usage in Claude Code
 
-### Task Lifecycle
+Users give natural language instructions, and Claude automatically calls the right tools.
+Composite instructions trigger multiple tools in sequence.
 
-```
-pm_add_task(title="Add auth", phase="phase-1", priority="P0")
-  → PROJ-001 created (todo)
-
-pm_update_task(task_id="PROJ-001", status="in_progress")
-  → working on it
-
-pm_update_task(task_id="PROJ-001", status="done")
-  → completed
-
-pm_log(entry="Auth feature implemented with JWT")
-  → daily log recorded
-```
-
-### Issue Discovery During Review
+### Project Basics
 
 ```
-pm_add_issue(parent_id="PROJ-001", title="JWT token expiry not handled")
-  → PROJ-005 created, PROJ-001 reverted to "review"
+User:   Initialize PM for this project
+Claude: → pm_init → pm_status → pm_next
+        Creates .pm/ directory, adds rules to CLAUDE.md, shows current state
 
-pm_update_task(task_id="PROJ-005", status="done")
-  → all_issues_resolved=True, suggest closing PROJ-001
+User:   What's the current progress?
+Claude: → pm_status
+        Shows phase progress, task counts, and blockers
+
+User:   What should I work on next?
+Claude: → pm_next
+        Recommends 3 tasks based on priority and dependencies
+```
+
+### Task Management
+
+```
+User:   Create a task "Add authentication", phase-1, P0
+Claude: → pm_add_task(title="Add authentication", phase="phase-1", priority="P0")
+        PROJ-001 created
+
+User:   Starting work on PROJ-001
+Claude: → pm_update_task(task_id="PROJ-001", status="in_progress")
+        Status changed to in_progress
+
+User:   Auth feature done. Tests pass
+Claude: → pm_update_task(task_id="PROJ-001", status="done")
+        → pm_log(entry="Auth feature implemented, tests passing")
+        → pm_next()
+        Task completed, log recorded, next tasks recommended (composite execution)
+```
+
+### Issue Discovery
+
+```
+User:   JWT token expiry isn't handled — add an issue for that
+Claude: → pm_add_issue(parent_id="PROJ-001", title="JWT token expiry not handled")
+        PROJ-005 created, PROJ-001 automatically reverted to "review"
+
+User:   Fixed PROJ-005
+Claude: → pm_update_task(task_id="PROJ-005", status="done")
+        All issues resolved → "Close PROJ-001 as done?" (auto-suggestion)
 ```
 
 ### 3-Layer Knowledge System
 
+Three levels of knowledge capture, matched to formality:
+
 ```
-# Layer 1: Casual — quick notes during work
-pm_remember(content="FastMCP v2 requires Python 3.11+", type="observation")
+User:   FastMCP v2 requires Python 3.11+. Note that down
+Claude: → pm_remember(content="FastMCP v2 requires Python 3.11+", type="observation")
+        [Layer 1: Memory] Quick casual note
 
-# Layer 2: Structured — research findings, trade-off analyses
-pm_record(category="tradeoff", title="JWT vs Session Auth",
-          findings="JWT: stateless but larger payload...",
-          conclusion="Use JWT for API, session for web",
-          confidence="high")
+User:   Record the JWT vs Session auth comparison results
+Claude: → pm_record(category="tradeoff", title="JWT vs Session Auth",
+            findings="JWT: stateless but larger payload...",
+            conclusion="Use JWT for API, session for web",
+            confidence="high")
+        [Layer 2: Knowledge Record] Structured research findings
 
-# Layer 3: Formal — architecture decisions
-pm_add_decision(title="Use JWT for API auth",
-                context="Need stateless auth for microservices",
-                decision="JWT with RS256, 15min expiry")
+User:   We're going with JWT for the API. Record as ADR?
+Claude: → pm_add_decision(title="Use JWT for API auth",
+            context="Need stateless auth for microservices",
+            decision="JWT with RS256, 15min expiry")
+        [Layer 3: ADR] Formal architecture decision
 ```
 
 ### Knowledge Record Categories
 
-| Category | Use Case |
-|----------|----------|
-| `research` | General research findings |
-| `market` | Market analysis, competitor research |
-| `spike` | Technical spike / prototype results |
-| `requirement` | Requirements definition |
-| `constraint` | Technical/business constraints |
-| `tradeoff` | Trade-off analysis (A vs B) |
-| `risk_analysis` | Risk assessment results |
-| `spec` | Feature specification |
-| `api_design` | API design documentation |
+| Category | Use Case | Example Prompt |
+|----------|----------|----------------|
+| `research` | General research findings | "Record the auth research results" |
+| `market` | Market analysis, competitor research | "Record the competitor auth analysis" |
+| `spike` | Technical spike / prototype results | "Record the FastMCP spike results" |
+| `requirement` | Requirements definition | "Record the auth requirements" |
+| `constraint` | Technical/business constraints | "Record the Python 3.11+ constraint" |
+| `tradeoff` | Trade-off analysis (A vs B) | "Record the SQL vs NoSQL comparison" |
+| `risk_analysis` | Risk assessment results | "Record the JWT vulnerability risks" |
+| `spec` | Feature specification | "Record the auth API spec" |
+| `api_design` | API design documentation | "Record the endpoint design" |
 
-### Knowledge Record Lifecycle
+### Knowledge Record Updates
 
 ```
-pm_record(category="research", title="Auth options", confidence="low")
-  → KR-001 (draft, low confidence)
+User:   KR-001 is verified now. Set it to validated, high confidence
+Claude: → pm_knowledge(action="update", record_id="KR-001",
+            new_status="validated", confidence="high")
 
-pm_knowledge(action="update", record_id="KR-001",
-             new_status="validated", confidence="high",
-             conclusion="JWT is the best option")
-  → KR-001 (validated, high confidence)
+User:   KR-001 is superseded by newer research
+Claude: → pm_knowledge(action="update", record_id="KR-001",
+            new_status="superseded")
 
-pm_knowledge(action="update", record_id="KR-001",
-             new_status="superseded")
-  → KR-001 (superseded — replaced by newer research)
+User:   Show all research knowledge records
+Claude: → pm_knowledge(action="list", category="research")
+        Lists all records in the research category
+
+User:   Give me a knowledge summary
+Claude: → pm_knowledge(action="summary")
+        Shows counts by category and status
 ```
 
 ---
@@ -203,31 +235,42 @@ decision → tasks → spec → plan → check → implement → test → qualit
 ### Workflow Usage
 
 ```
-# Start
-pm_workflow_start(feature="user authentication", template="discovery")
-  → WF-001 started, step 1: research
+User:   I want to start researching user authentication
+Claude: → pm_workflow_start(feature="user authentication", template="discovery")
+        WF-001 started. First step: "research" — shows guidance
 
-# Advance (normal)
-pm_workflow_advance(artifacts=["KR-001"])
-  → step completed, next: fact_check
+User:   Research done. Move to next step
+Claude: → pm_workflow_advance(artifacts=["KR-001"])
+        research completed, next: fact_check
 
-# Loop back (brainstorming)
-pm_workflow_advance(proceed=False)
-  → looped back to research (iteration 2)
+User:   I need to investigate more. Let's loop back
+Claude: → pm_workflow_advance(proceed=False)
+        Looped back to research (iteration 2)
 
-# Skip optional step
-pm_workflow_advance(skip=True)
-  → step skipped, next step activated
+User:   OK, enough research. Let's proceed through
+Claude: → pm_workflow_advance() (repeated through steps)
+        research → fact_check → proposal (asks for user approval at gate)
 
-# Check status
-pm_workflow_status()
-  → progress: 3/5, current: proposal, knowledge: {count: 2}
+User:   Approved. Go ahead
+Claude: → pm_workflow_advance()  # passes the gate
+        → cross_check → confirm
+        "Discovery complete. Start Development workflow?"
 
-# Chaining: discovery completes → suggests development
-pm_workflow_advance()
-  → workflow_completed, chain_to: "development"
-pm_workflow_start(feature="user authentication", template="development")
-  → WF-002 started
+User:   Yes, start development
+Claude: → pm_workflow_start(feature="user authentication", template="development")
+        WF-002 started (Discovery → Development chain)
+
+User:   What's the workflow progress?
+Claude: → pm_workflow_status()
+        Progress: 3/9, current step: plan, knowledge records: 5
+
+User:   Skip this step
+Claude: → pm_workflow_advance(skip=True)
+        Step skipped, next step activated
+
+User:   What workflow templates are available?
+Claude: → pm_workflow_templates()
+        discovery (5 steps, builtin), development (9 steps, builtin)
 ```
 
 ### Custom Templates
@@ -261,21 +304,44 @@ steps:
 
 ## Session Lifecycle
 
+### Session Start (auto-executed by CLAUDE.md rules)
+
 ```
-# Session start (auto-executed by CLAUDE.md rules)
-pm_status()                    # Current state
-pm_next()                      # Recommended tasks
-pm_recall()                    # Last session context
+Claude: → pm_status()       Check current state
+        → pm_next()         Show recommended tasks
+        → pm_recall()       Restore last session context
+        → Warn if blockers or overdue items exist
+```
 
-# During work
-pm_update_task(status="in_progress")   # Start task
-pm_remember(content="...")             # Save findings
-pm_record(category="...", title="...")  # Record knowledge
-pm_workflow_advance()                  # Progress workflow
+### During Work
 
-# Session end
-pm_log(entry="Completed auth feature")
-pm_session_summary(action="save", summary="...")
+```
+User:   Working on PROJ-003
+Claude: → pm_update_task(task_id="PROJ-003", status="in_progress")
+
+User:   (implements code...)
+Claude: Auto-saves important findings → pm_remember()
+        Records knowledge when needed → pm_record()
+        Advances workflow steps       → pm_workflow_advance()
+```
+
+### Session End
+
+```
+User:   Let's wrap up for today
+Claude: → pm_update_task() to check in-progress task states
+        → pm_log(entry="Session accomplishments summary")
+        → pm_session_summary(action="save", summary="...")
+        → Suggest committing uncommitted changes
+```
+
+### After Context Compaction
+
+```
+(Claude Code automatically compresses context)
+Claude: → pm_recall()           Restore latest memories and session summary
+        → pm_workflow_status()   Check current workflow position
+        Continues work seamlessly
 ```
 
 ---

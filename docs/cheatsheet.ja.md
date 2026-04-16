@@ -85,80 +85,112 @@ Claude Code セッション:
 
 ---
 
-## よくある使い方
+## Claude Code での使い方
 
-### タスクのライフサイクル
+ユーザーは自然言語で指示するだけで、Claude が適切なツールを呼び出します。
+複合的な指示にも対応し、複数ツールを自動で組み合わせて実行します。
 
-```
-pm_add_task(title="認証機能追加", phase="phase-1", priority="P0")
-  → PROJ-001 作成 (todo)
-
-pm_update_task(task_id="PROJ-001", status="in_progress")
-  → 作業開始
-
-pm_update_task(task_id="PROJ-001", status="done")
-  → 完了
-
-pm_log(entry="JWT認証を実装完了")
-  → デイリーログに記録
-```
-
-### レビュー中にイシューを発見した場合
+### プロジェクト管理の基本
 
 ```
-pm_add_issue(parent_id="PROJ-001", title="JWTトークンの期限切れが未処理")
-  → PROJ-005 作成、PROJ-001 は自動で "review" に戻る
+ユーザー: PM初期化して
+Claude:   → pm_init → pm_status → pm_next を実行
+          .pm/ ディレクトリ作成、CLAUDE.md にルール追加、現在の状態を表示
 
-pm_update_task(task_id="PROJ-005", status="done")
-  → all_issues_resolved=True、PROJ-001 の完了を提案
+ユーザー: 現在の進捗を教えて
+Claude:   → pm_status を実行
+          フェーズ進捗、タスク数、ブロッカーを表示
+
+ユーザー: 次は何をすべき？
+Claude:   → pm_next を実行
+          優先度・依存関係を考慮して推薦タスクを3件表示
 ```
 
-### 3層ナレッジ管理システム
+### タスク管理
 
 ```
-# Layer 1: カジュアル — 作業中の気づきメモ
-pm_remember(content="FastMCP v2 は Python 3.11+ が必須", type="observation")
+ユーザー: 「認証機能の追加」をタスク登録して。phase-1、P0で
+Claude:   → pm_add_task(title="認証機能の追加", phase="phase-1", priority="P0")
+          PROJ-001 を作成
 
-# Layer 2: 構造化 — 調査結果、トレードオフ分析
-pm_record(category="tradeoff", title="JWT vs セッション認証",
-          findings="JWT: ステートレスだがペイロードが大きい...",
-          conclusion="API は JWT、Web はセッション",
-          confidence="high")
+ユーザー: PROJ-001 に着手します
+Claude:   → pm_update_task(task_id="PROJ-001", status="in_progress")
+          ステータスを in_progress に変更
 
-# Layer 3: フォーマル — 設計判断（ADR）
-pm_add_decision(title="API認証に JWT を採用",
-                context="マイクロサービスにステートレス認証が必要",
-                decision="JWT + RS256、有効期限15分")
+ユーザー: 認証機能を実装完了。テストもパスした
+Claude:   → pm_update_task(task_id="PROJ-001", status="done")
+          → pm_log(entry="認証機能を実装完了、テストパス")
+          → pm_next()
+          タスク完了、ログ記録、次のタスクを推薦（複合実行）
+```
+
+### イシュー（課題）の発見
+
+```
+ユーザー: あ、JWTのトークン期限切れが未処理だった。イシューにして
+Claude:   → pm_add_issue(parent_id="PROJ-001", title="JWTトークンの期限切れが未処理")
+          PROJ-005 を作成、PROJ-001 は自動で review に戻る
+
+ユーザー: PROJ-005 修正完了
+Claude:   → pm_update_task(task_id="PROJ-005", status="done")
+          全イシュー解消 → 「PROJ-001 を done にしますか？」と提案
+```
+
+### 3層ナレッジ管理
+
+用途に応じて3つの記録レベルを使い分けます:
+
+```
+ユーザー: FastMCP v2 は Python 3.11+ が必須らしい。メモしておいて
+Claude:   → pm_remember(content="FastMCP v2 は Python 3.11+ が必須", type="observation")
+          【Layer 1: Memory】カジュアルな気づきメモ
+
+ユーザー: JWT と セッション認証を比較調査した結果を記録して
+Claude:   → pm_record(category="tradeoff", title="JWT vs セッション認証",
+              findings="JWT: ステートレスだがペイロードが大きい...",
+              conclusion="API は JWT、Web はセッション",
+              confidence="high")
+          【Layer 2: Knowledge Record】構造化された調査結果
+
+ユーザー: API認証にJWTを採用する方針で。ADRとして記録しますか？
+Claude:   → pm_add_decision(title="API認証に JWT を採用",
+              context="マイクロサービスにステートレス認証が必要",
+              decision="JWT + RS256、有効期限15分")
+          【Layer 3: ADR】フォーマルな設計判断記録
 ```
 
 ### 知識レコードのカテゴリ
 
-| カテゴリ | 用途 |
-|----------|------|
-| `research` | 一般的な調査結果 |
-| `market` | 市場分析、競合調査 |
-| `spike` | 技術スパイク / プロトタイプ結果 |
-| `requirement` | 要件定義 |
-| `constraint` | 技術的・ビジネス上の制約 |
-| `tradeoff` | トレードオフ分析（A vs B） |
-| `risk_analysis` | リスク評価結果 |
-| `spec` | 機能仕様 |
-| `api_design` | API 設計ドキュメント |
+| カテゴリ | 用途 | 使い方例 |
+|----------|------|----------|
+| `research` | 一般的な調査結果 | 「○○について調べた結果をまとめて」 |
+| `market` | 市場分析、競合調査 | 「競合の認証方式を調査した結果を記録」 |
+| `spike` | 技術スパイク / プロトタイプ結果 | 「FastMCPのスパイク結果を記録して」 |
+| `requirement` | 要件定義 | 「認証機能の要件をまとめて」 |
+| `constraint` | 技術的・ビジネス上の制約 | 「Python 3.11以上の制約を記録」 |
+| `tradeoff` | トレードオフ分析（A vs B） | 「SQLとNoSQLの比較結果を記録」 |
+| `risk_analysis` | リスク評価結果 | 「JWTの脆弱性リスクを記録」 |
+| `spec` | 機能仕様 | 「認証APIの仕様を記録して」 |
+| `api_design` | API 設計ドキュメント | 「エンドポイント設計を記録」 |
 
-### 知識レコードのライフサイクル
+### 知識レコードの更新
 
 ```
-pm_record(category="research", title="認証方式の調査", confidence="low")
-  → KR-001 (draft, 信頼度: low)
+ユーザー: KR-001 の調査を検証したので validated にして。信頼度は high に
+Claude:   → pm_knowledge(action="update", record_id="KR-001",
+              new_status="validated", confidence="high")
 
-pm_knowledge(action="update", record_id="KR-001",
-             new_status="validated", confidence="high",
-             conclusion="JWT が最適")
-  → KR-001 (validated, 信頼度: high)
+ユーザー: KR-001 は新しい調査で上書きされた。superseded にして
+Claude:   → pm_knowledge(action="update", record_id="KR-001",
+              new_status="superseded")
 
-pm_knowledge(action="update", record_id="KR-001",
-             new_status="superseded")
-  → KR-001 (superseded — 新しい調査結果に置き換え)
+ユーザー: リサーチ系のナレッジを全部見せて
+Claude:   → pm_knowledge(action="list", category="research")
+          research カテゴリの全レコードを表示
+
+ユーザー: ナレッジの概要を教えて
+Claude:   → pm_knowledge(action="summary")
+          カテゴリ別・ステータス別のサマリーを表示
 ```
 
 ---
@@ -203,31 +235,42 @@ decision → tasks → spec → plan → check → implement → test → qualit
 ### ワークフローの使い方
 
 ```
-# 開始
-pm_workflow_start(feature="ユーザー認証", template="discovery")
-  → WF-001 開始、ステップ 1: research
+ユーザー: ユーザー認証機能について調査から始めたい
+Claude:   → pm_workflow_start(feature="ユーザー認証", template="discovery")
+          WF-001 開始。最初のステップ「research」のガイダンスを表示
 
-# 通常の進行
-pm_workflow_advance(artifacts=["KR-001"])
-  → ステップ完了、次: fact_check
+ユーザー: 調査完了。次のステップへ
+Claude:   → pm_workflow_advance(artifacts=["KR-001"])
+          research 完了、次: fact_check
 
-# ループバック（ブレーンストーミング）
-pm_workflow_advance(proceed=False)
-  → research に戻る（イテレーション 2）
+ユーザー: まだ調べ足りない。もう一周したい
+Claude:   → pm_workflow_advance(proceed=False)
+          brainstorm ループの先頭に戻る（イテレーション 2）
 
-# オプションのステップをスキップ
-pm_workflow_advance(skip=True)
-  → ステップをスキップ、次のステップへ
+ユーザー: OK、今回の調査で十分。次へ進めて
+Claude:   → pm_workflow_advance() を繰り返し実行
+          research → fact_check → proposal（ここでユーザー承認を求める）
 
-# 進捗確認
-pm_workflow_status()
-  → progress: 3/5, current: proposal, knowledge: {count: 2}
+ユーザー: その方針でOK
+Claude:   → pm_workflow_advance()  # proposal のゲート通過
+          → cross_check → confirm まで進行
+          「Discovery 完了。Development ワークフローを開始しますか？」
 
-# 連鎖: Discovery 完了 → Development を提案
-pm_workflow_advance()
-  → workflow_completed, chain_to: "development"
-pm_workflow_start(feature="ユーザー認証", template="development")
-  → WF-002 開始
+ユーザー: はい、お願いします
+Claude:   → pm_workflow_start(feature="ユーザー認証", template="development")
+          WF-002 開始（Discovery → Development の連鎖）
+
+ユーザー: 今のワークフローの進捗は？
+Claude:   → pm_workflow_status()
+          進捗: 3/9、現在のステップ: plan、知識レコード: 5件
+
+ユーザー: このステップはスキップして
+Claude:   → pm_workflow_advance(skip=True)
+          ステップをスキップ、次のステップへ
+
+ユーザー: どんなワークフローテンプレートがある？
+Claude:   → pm_workflow_templates()
+          discovery (5 steps, builtin), development (9 steps, builtin)
 ```
 
 ### カスタムテンプレート
@@ -262,21 +305,44 @@ steps:
 
 ## セッションのライフサイクル
 
+### セッション開始（CLAUDE.md ルールにより自動実行）
+
 ```
-# セッション開始（CLAUDE.md ルールにより自動実行）
-pm_status()                    # 現在の状態
-pm_next()                      # 推薦タスク
-pm_recall()                    # 前回セッションの文脈
+Claude:   → pm_status()       現在の状態を確認
+          → pm_next()         推薦タスクを表示
+          → pm_recall()       前回セッションの文脈を復元
+          → ブロッカーがあれば警告
+```
 
-# 作業中
-pm_update_task(status="in_progress")   # タスク着手
-pm_remember(content="...")             # 発見を記録
-pm_record(category="...", title="...")  # 知識を記録
-pm_workflow_advance()                  # ワークフロー進行
+### 作業中
 
-# セッション終了
-pm_log(entry="認証機能を実装完了")
-pm_session_summary(action="save", summary="...")
+```
+ユーザー: PROJ-003 に取り掛かります
+Claude:   → pm_update_task(task_id="PROJ-003", status="in_progress")
+
+ユーザー: （コードを書いて実装中...）
+Claude:   重要な発見があれば → pm_remember() で自動保存
+          知識を記録すべき時 → pm_record() で自動記録
+          ワークフロー進行中 → pm_workflow_advance() でステップ更新
+```
+
+### セッション終了
+
+```
+ユーザー: 今日はここまでにしよう
+Claude:   → pm_update_task() で進行中タスクの状態確認
+          → pm_log(entry="セッションの成果をまとめ")
+          → pm_session_summary(action="save", summary="...")
+          → 未コミットの変更があればコミット提案
+```
+
+### コンテキスト圧縮後の復元
+
+```
+（Claude Code がコンテキストを自動圧縮した後）
+Claude:   → pm_recall()       最新の記憶とセッション要約を復元
+          → pm_workflow_status()  ワークフローの現在地を確認
+          作業を継続
 ```
 
 ---
