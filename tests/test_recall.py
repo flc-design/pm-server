@@ -260,7 +260,7 @@ class TestClaudeMdV3:
     def test_template_version(self):
         from pm_server.claudemd import TEMPLATE_VERSION
 
-        assert TEMPLATE_VERSION == 5
+        assert TEMPLATE_VERSION == 6
 
     def test_template_has_pm_recall(self):
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
