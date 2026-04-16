@@ -28,16 +28,19 @@ from .models import (
     Task,
     TaskNotFoundError,
     TaskStatus,
+    WorkflowStatus,
 )
 from .storage import (
     add_daily_log,
     add_decision,
     add_task,
     init_pm_directory,
+    list_workflow_templates,
     load_project,
     load_registry,
     load_risks,
     load_tasks,
+    load_workflows,
     next_decision_number,
     next_task_number,
     register_project,
@@ -45,6 +48,7 @@ from .storage import (
     save_registry,
     update_task,
 )
+from .workflow import advance_step, start_workflow, workflow_status
 from .utils import (
     aggregate_task_status,
     calculate_phase_progress,
@@ -1009,6 +1013,117 @@ def pm_update_claudemd(project_path: str | None = None) -> dict:
         "template_version": TEMPLATE_VERSION,
         "before": before,
         "after": after,
+    }
+
+
+# ─── Workflow ───────────────────────────────────────
+
+
+@mcp.tool()
+def pm_workflow_start(
+    feature: str,
+    template: str = "development",
+    project_path: str | None = None,
+) -> dict:
+    """Start a new workflow for a feature.
+
+    Creates a workflow instance from a template and activates the first step.
+    Returns guidance for what to do in the first step.
+
+    feature: Short description of what you're building (e.g. "add user auth").
+    template: Workflow template name. Use pm_workflow_templates to see available ones.
+              Default: "development" (ADR → tasks → spec → implement → test → quality).
+    """
+    pm_path = _get_pm_path(project_path)
+    return start_workflow(pm_path, feature, template)
+
+
+@mcp.tool()
+def pm_workflow_status(
+    workflow_id: str | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """Get workflow status with step details and guidance.
+
+    Shows progress, current step, completed steps, and what to do next.
+    Auto-detects the active workflow if workflow_id is omitted.
+    """
+    pm_path = _get_pm_path(project_path)
+    return workflow_status(pm_path, workflow_id)
+
+
+@mcp.tool()
+def pm_workflow_advance(
+    workflow_id: str | None = None,
+    proceed: bool = True,
+    artifacts: list[str] | None = None,
+    notes: str | None = None,
+    skip: bool = False,
+    project_path: str | None = None,
+) -> dict:
+    """Advance the current workflow step.
+
+    Marks the current step as done and activates the next step.
+    Returns guidance for the next step (tool/skill/agent hints).
+
+    workflow_id: Specific workflow. Auto-detects active workflow if omitted.
+    proceed: For loop steps — True exits the loop, False loops back for another iteration.
+    artifacts: IDs of artifacts produced (ADR, task, KR IDs). Tracked per step.
+    notes: Free-text notes for this step.
+    skip: Skip the current step (marks as SKIPPED instead of DONE).
+    """
+    pm_path = _get_pm_path(project_path)
+    return advance_step(pm_path, workflow_id, proceed, artifacts, notes, skip)
+
+
+@mcp.tool()
+def pm_workflow_list(
+    status: str | None = None,
+    project_path: str | None = None,
+) -> dict:
+    """List all workflow instances for the project.
+
+    status: Filter by workflow status (active/completed/paused/abandoned).
+            Returns all workflows if omitted.
+    """
+    pm_path = _get_pm_path(project_path)
+    workflows = load_workflows(pm_path)
+
+    if status:
+        wf_status = WorkflowStatus(status)
+        workflows = [w for w in workflows if w.status == wf_status]
+
+    return {
+        "count": len(workflows),
+        "workflows": [
+            {
+                "id": w.id,
+                "name": w.name,
+                "feature": w.feature,
+                "template": w.template,
+                "status": w.status.value,
+                "current_step_index": w.current_step_index,
+                "total_steps": len(w.steps),
+                "created": w.created.isoformat(),
+                "updated": w.updated.isoformat(),
+            }
+            for w in workflows
+        ],
+    }
+
+
+@mcp.tool()
+def pm_workflow_templates(project_path: str | None = None) -> dict:
+    """List available workflow templates.
+
+    Shows both built-in and custom templates.
+    Custom templates in .pm/workflow_templates/ override built-in ones with the same name.
+    """
+    pm_path = _get_pm_path(project_path)
+    templates = list_workflow_templates(pm_path)
+    return {
+        "count": len(templates),
+        "templates": templates,
     }
 
 
