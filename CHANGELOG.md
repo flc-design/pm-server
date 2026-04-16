@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.3.3] - 2026-04-16
+
+### Added
+- Child issue (sub-task) support: `pm_add_issue` tool for creating issues linked to parent tasks via `parent_id`
+- `pm_tasks` filter by `parent_id` to list child issues
+- Auto-revert parent task from `done` to `review` when a child issue is added
+- `all_issues_resolved` flag in `pm_update_task` when all sibling issues are done
+- PostToolUse hooks: auto-remind PM actions after `git commit` via Claude Code hooks
+- `pm-server hook post-tool-use` CLI command for hook handler
+- Auto-install hooks from `pm_status` if not configured
+- Generic detection of other MCP rule sections in CLAUDE.md (Open-Closed Principle)
+- `other_rule_sections` in `pm_status` response for cross-MCP coordination
+- CLAUDE.md template v5 with instruction to execute other rule sections
+
+### Fixed
+- **Critical**: `resolve_project_path` no longer matches global `~/.pm/` as a project directory (ADR-004)
+- Added `_is_project_pm_dir()` guard to distinguish project `.pm/` from global registry
+- `pm_cleanup` now detects orphan project files (tasks.yaml, decisions.yaml) in `~/.pm/`
+- `pm_log` and `pm_remember` auto-link to active in-progress task when `task_id` is omitted
+
+### Changed
+- MCP tool count: 16 → 23
+- Pydantic model count: 12 → 14
+- Enum count: 9 → 10
+- Test count: 136 → 305
+
+## [0.3.2] - 2026-04-15
+
+### Changed
+- Updated README.md with Memory Layer documentation
+- PyPI package rebuild (v0.3.1 had stale README)
+
+## [0.3.1] - 2026-04-15
+
+### Added
+- Memory Layer: `pm_remember`, `pm_recall`, `pm_session_summary` tools
+- `pm_memory_search` for advanced full-text search with filters
+- `pm_memory_stats` and `pm_memory_cleanup` for memory operations
+- SQLite + FTS5 based memory storage with cross-project global index
+- Session continuity via `ContextBuilder` (Progressive Disclosure)
+- `pm-server context-inject` CLI command
+- CLAUDE.md template v2-v4 with memory layer rules
+
 ## [0.3.0] - 2026-04-08
 
 ### Added
