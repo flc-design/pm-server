@@ -36,6 +36,7 @@ Thumbs.db
 
 # Claude Code (local dev config)
 .claude/
+CLAUDE.md
 
 # PM Server data (local project management)
 .pm/
