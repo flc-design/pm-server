@@ -85,6 +85,17 @@ class LogCategory(StrEnum):
     MILESTONE = "milestone"
 
 
+class IssueSeverity(StrEnum):
+    """Classifies a child issue's nature — gates auto-revert behavior.
+
+    defect      = flaw found during review; parent reopens to 'review'
+    enhancement = future improvement idea; parent stays 'done'
+    """
+
+    DEFECT = "defect"
+    ENHANCEMENT = "enhancement"
+
+
 class MemoryType(StrEnum):
     """Memory observation type."""
 
@@ -208,6 +219,7 @@ class Task(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     notes: str = ""
     parent_id: str | None = None
+    severity: IssueSeverity | None = None
 
 
 class Consequences(BaseModel):

@@ -339,6 +339,7 @@ class TestPmAddIssue:
         assert result["status"] == "created"
         assert result["task"]["parent_id"] == "TEST-002"
         assert result["task"]["phase"] == "phase-1"  # inherited from parent
+        assert result["warnings"] == []
 
     def test_add_issue_inherits_phase(self, initialized_project):
         """Child task inherits phase from parent automatically."""
@@ -349,20 +350,69 @@ class TestPmAddIssue:
         )
         assert result["task"]["phase"] == "phase-0"
 
-    def test_add_issue_reverts_done_parent_to_review(self, initialized_project):
-        """When parent is 'done', adding an issue moves it to 'review'."""
+    def test_add_issue_defect_reverts_done_parent_to_review(self, initialized_project):
+        """severity=defect (default) on a done parent moves it to 'review' and warns."""
         result = pm_add_issue(
             parent_id="TEST-001",  # status: done
             title="Found a problem",
             project_path=str(initialized_project),
         )
+        # Structured warnings
+        assert len(result["warnings"]) == 1
+        warning = result["warnings"][0]
+        assert warning["code"] == "parent_reverted"
+        assert warning["level"] == "info"
+        assert "TEST-001" in warning["message"]
+        assert "remediation" in warning
+
+        # Legacy fields still populated (deprecated, additive)
         assert result["parent_reverted"] is True
         assert "review" in result["message"]
 
-        # Verify parent status actually changed
+        # Parent status actually changed
         tasks = pm_tasks(project_path=str(initialized_project))
         parent = next(t for t in tasks if t["id"] == "TEST-001")
         assert parent["status"] == "review"
+
+    def test_add_issue_enhancement_keeps_parent_done(self, initialized_project):
+        """severity=enhancement on a done parent must NOT revert status."""
+        result = pm_add_issue(
+            parent_id="TEST-001",  # status: done
+            title="Future improvement",
+            severity="enhancement",
+            project_path=str(initialized_project),
+        )
+        assert result["warnings"] == []
+        assert "parent_reverted" not in result
+        assert "message" not in result
+
+        tasks = pm_tasks(project_path=str(initialized_project))
+        parent = next(t for t in tasks if t["id"] == "TEST-001")
+        assert parent["status"] == "done"
+
+    def test_add_issue_severity_persisted_on_task(self, initialized_project):
+        """severity is stored on the child Task so later queries can distinguish."""
+        result = pm_add_issue(
+            parent_id="TEST-002",
+            title="Enhancement idea",
+            severity="enhancement",
+            project_path=str(initialized_project),
+        )
+        child_id = result["task"]["id"]
+        tasks = pm_tasks(project_path=str(initialized_project))
+        child = next(t for t in tasks if t["id"] == child_id)
+        assert child.get("severity") == "enhancement"
+
+    def test_add_issue_invalid_severity_raises(self, initialized_project):
+        """Unknown severity values are rejected with a helpful message."""
+        with pytest.raises(Exception) as excinfo:
+            pm_add_issue(
+                parent_id="TEST-002",
+                title="Bad severity",
+                severity="critical",  # not a valid IssueSeverity
+                project_path=str(initialized_project),
+            )
+        assert "severity" in str(excinfo.value).lower()
 
     def test_add_issue_no_revert_when_parent_not_done(self, initialized_project):
         """When parent is not 'done', no automatic status change."""
@@ -371,6 +421,7 @@ class TestPmAddIssue:
             title="New issue",
             project_path=str(initialized_project),
         )
+        assert result["warnings"] == []
         assert "parent_reverted" not in result
 
     def test_add_issue_nonexistent_parent(self, initialized_project):

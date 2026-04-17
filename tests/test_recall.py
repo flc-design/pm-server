@@ -255,17 +255,25 @@ class TestContextBuilderBudget:
 
 
 class TestClaudeMdV3:
-    """Verify v5 template: Memory Layer + checkpoint + issue + other rules."""
+    """Verify template evolution: Memory Layer + checkpoint + issue + warnings[] relay."""
 
     def test_template_version(self):
         from pm_server.claudemd import TEMPLATE_VERSION
 
-        assert TEMPLATE_VERSION == 6
+        assert TEMPLATE_VERSION == 7
 
     def test_template_has_pm_recall(self):
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
 
         assert "pm_recall" in CLAUDEMD_TEMPLATE
+
+    def test_template_covers_severity_and_warnings(self):
+        """v7 must guide Claude on severity selection and warnings[] relay."""
+        from pm_server.claudemd import CLAUDEMD_TEMPLATE
+
+        assert "severity=" in CLAUDEMD_TEMPLATE or 'severity="' in CLAUDEMD_TEMPLATE
+        assert "warnings[]" in CLAUDEMD_TEMPLATE
+        assert "remediation" in CLAUDEMD_TEMPLATE
 
     def test_template_has_pm_remember(self):
         from pm_server.claudemd import CLAUDEMD_TEMPLATE

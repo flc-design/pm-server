@@ -16,6 +16,7 @@ from .models import (
     Consequences,
     DailyLogEntry,
     Decision,
+    IssueSeverity,
     KnowledgeCategory,
     KnowledgeRecord,
     KnowledgeStatus,
@@ -23,6 +24,7 @@ from .models import (
     Memory,
     MemoryType,
     PhaseStatus,
+    PmServerError,
     Priority,
     Project,
     ProjectNotFoundError,
@@ -111,6 +113,8 @@ def _task_summary(task: Task) -> dict:
     }
     if task.parent_id:
         result["parent_id"] = task.parent_id
+    if task.severity is not None:
+        result["severity"] = task.severity.value
     return result
 
 
@@ -421,6 +425,18 @@ def pm_blockers(project_path: str | None = None) -> list:
     ]
 
 
+def _build_warning(level: str, code: str, message: str, remediation: str | None = None) -> dict:
+    """Build a structured warning entry for MCP tool responses.
+
+    Warnings surface non-fatal side effects Claude must relay to the user.
+    Shape: {level, code, message, remediation?}.
+    """
+    warning: dict[str, str] = {"level": level, "code": code, "message": message}
+    if remediation:
+        warning["remediation"] = remediation
+    return warning
+
+
 @mcp.tool()
 def pm_add_issue(
     parent_id: str,
@@ -428,22 +444,42 @@ def pm_add_issue(
     priority: str = "P1",
     description: str = "",
     tags: list[str] | None = None,
+    severity: str = "defect",
     project_path: str | None = None,
 ) -> dict:
     """Add an issue (child task) to an existing task.
 
-    Use when issues are found during review or verification of a completed task.
-    Phase is auto-inherited from the parent task.
-    If the parent task is 'done', it is automatically moved back to 'review'.
+    Use when a defect is found during review/verification of a task, OR when an
+    enhancement idea surfaces that logically belongs under the parent.
+
+    severity gates the auto-revert behavior:
+      defect      (default) → if parent is 'done', it is moved back to 'review'.
+                               A 'parent_reverted' warning is emitted.
+      enhancement           → parent's status is never changed. Pure backlog link.
+
+    For *independent* backlog items not logically tied to a parent, use
+    pm_add_task instead — the parent/child link is discoverable from data, so
+    do not abuse pm_add_issue to create an arbitrary hierarchy.
+
+    The response always contains a 'warnings' list. Callers (Claude) MUST
+    surface any non-empty warnings to the user verbatim.
 
     parent_id: The ID of the parent task (e.g. 'PROJ-001').
     priority: P0 (critical) | P1 (important) | P2 (nice-to-have) | P3 (someday)
+    severity: defect | enhancement
     """
+    try:
+        severity_enum = IssueSeverity(severity)
+    except ValueError as e:
+        raise PmServerError(
+            f"Invalid severity {severity!r}. Must be one of: "
+            f"{', '.join(s.value for s in IssueSeverity)}"
+        ) from e
+
     pm_path = _get_pm_path(project_path)
     project = load_project(pm_path)
     tasks = load_tasks(pm_path)
 
-    # Find parent task
     parent = None
     for t in tasks:
         if t.id == parent_id:
@@ -452,7 +488,6 @@ def pm_add_issue(
     if parent is None:
         raise TaskNotFoundError(f"Parent task {parent_id} not found")
 
-    # Create child task with inherited phase
     number = next_task_number(pm_path)
     task_id = generate_task_id(project.name, number)
 
@@ -464,16 +499,36 @@ def pm_add_issue(
         description=description,
         tags=tags or [],
         parent_id=parent_id,
+        severity=severity_enum,
     )
     add_task(pm_path, child)
 
-    # Auto-revert parent to review if it was done
+    warnings: list[dict] = []
     parent_reverted = False
-    if parent.status == TaskStatus.DONE:
+    if severity_enum == IssueSeverity.DEFECT and parent.status == TaskStatus.DONE:
         update_task(pm_path, parent_id, status=TaskStatus.REVIEW)
         parent_reverted = True
+        warnings.append(
+            _build_warning(
+                level="info",
+                code="parent_reverted",
+                message=(
+                    f"親タスク {parent_id} を 'done' → 'review' に自動で戻しました"
+                    f"（severity=defect のため）"
+                ),
+                remediation=(
+                    f"{parent_id} の完了要件を再確認し、"
+                    "この欠陥を潰してから再度 done に戻してください"
+                ),
+            )
+        )
 
-    result = {"status": "created", "task": _task_summary(child)}
+    result: dict = {
+        "status": "created",
+        "task": _task_summary(child),
+        "warnings": warnings,
+    }
+    # Legacy fields (deprecated, kept additive for 0.4.x; scheduled for removal in 0.5.0)
     if parent_reverted:
         result["parent_reverted"] = True
         result["message"] = f"{parent_id} was 'done' → automatically moved to 'review'"
