@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.0] - 2026-04-17
+
+### Added
+- Workflow Engine: template-based state machine with 5 MCP tools (`pm_workflow_start`, `pm_workflow_advance`, `pm_workflow_status`, `pm_workflow_list`, `pm_workflow_templates`)
+- Built-in workflow templates: `discovery` (research/brainstorm) and `development` (implementation)
+- Workflow chaining support (e.g., discovery → development)
+- Loops, gates (`user_approval`), and optional steps for workflow flexibility
+- Knowledge Records: structured knowledge between casual Memory and formal ADR
+- `pm_record` and `pm_knowledge` MCP tools with 3 enums (KnowledgeCategory, KnowledgeStatus, ConfidenceLevel)
+- Super Research skill + dashboard extensions (Phase 7)
+- `pm_add_issue` severity parameter (`defect` | `enhancement`) — gates parent auto-revert
+- Structured `warnings[]` array in MCP tool responses: `{level, code, message, remediation}`
+- `Task.severity` field persists the issue classification
+- CLAUDE.md template v7: documents severity selection, warnings[] relay, workflow rules
+
+### Fixed
+- `pm_add_issue` silent parent-revert UX issue (ADR-006): Claude now explicitly relays auto-revert side-effects via structured warnings
+- `enhancement` severity issues no longer unexpectedly revert parent tasks from `done`
+
+### Changed
+- MCP tool count: 23 → 30
+- Pydantic model count: 14 → 17
+- Enum count: 10 → 15
+- Test count: 305 → 413
+- `pm_add_issue` default severity is `defect` (backward-compatible with v0.3.x behavior)
+- Legacy fields `parent_reverted` and `message` remain in responses (slated for removal in 0.5.0)
+
 ## [0.3.3] - 2026-04-16
 
 ### Added
