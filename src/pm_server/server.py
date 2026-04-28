@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import uuid
 from pathlib import Path
 
@@ -75,6 +76,38 @@ mcp = FastMCP("pm-server")
 _current_session_id: str = (
     f"sess-{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 )
+
+# ─── Multi-session disambiguation (PMSERV-049) ──────
+
+_AMBIGUITY_WINDOW_DEFAULT = 30  # minutes
+
+
+def _get_ambiguity_window() -> int:
+    """Read ambiguity window from env each call so tests can monkeypatch."""
+    raw = os.getenv("PM_SERVER_RECALL_AMBIGUITY_WINDOW_MIN")
+    if not raw:
+        return _AMBIGUITY_WINDOW_DEFAULT
+    try:
+        return int(raw)
+    except ValueError:
+        return _AMBIGUITY_WINDOW_DEFAULT
+
+
+def _detect_session_ambiguity(
+    store: MemoryStore,
+    current_session_id: str,
+    window_minutes: int = 30,
+) -> tuple[bool, list[SessionSummary]]:
+    """Detect when multiple sessions have produced summaries within window.
+
+    Returns (ambiguity_detected, candidates). Ambiguity is flagged when at
+    least two distinct session_ids appear in summaries updated within the
+    window — that's when the caller cannot tell which "last_session" is theirs.
+    """
+    summaries = store.list_summaries_within(window_minutes=window_minutes, limit=10)
+    distinct_sessions = {s.session_id for s in summaries}
+    return (len(distinct_sessions) >= 2, summaries)
+
 
 # ─── Memory store cache (lazy init per project) ─────
 
@@ -612,7 +645,12 @@ def pm_recall(
         if not query:
             return {"status": "error", "message": "query is required for cross_project search"}
         results = store.search_global(query, limit=limit)
-        return {"query": query, "cross_project": True, "results": results}
+        return {
+            "current_session_id": _current_session_id,
+            "query": query,
+            "cross_project": True,
+            "results": results,
+        }
 
     store = _get_memory_store(project_path)
 
@@ -634,18 +672,42 @@ def pm_recall(
         recent = store.get_recent(limit=limit)
         if type:
             recent = [m for m in recent if m.type.value == type]
-        return {
-            "last_session": {
+
+        ambiguity, candidates = _detect_session_ambiguity(
+            store, _current_session_id, window_minutes=_get_ambiguity_window()
+        )
+
+        last_session_dict = (
+            {
                 "session_id": summary.session_id,
                 "summary": summary.summary,
                 "goals": summary.goals,
                 "pending": summary.pending,
                 "created_at": summary.created_at,
+                "updated_at": summary.updated_at,
             }
             if summary
-            else None,
+            else None
+        )
+
+        response: dict = {
+            "current_session_id": _current_session_id,
+            "last_session": last_session_dict,
             "recent_memories": [_memory_dict(m) for m in recent],
+            "ambiguity_detected": ambiguity,
         }
+        if ambiguity:
+            response["last_session_candidates"] = [
+                {
+                    "session_id": c.session_id,
+                    "summary_excerpt": (c.summary[:200] + ("..." if len(c.summary) > 200 else "")),
+                    "created_at": c.created_at,
+                    "updated_at": c.updated_at,
+                    "is_current_session": c.session_id == _current_session_id,
+                }
+                for c in candidates
+            ]
+        return response
 
     # Search by query
     if query:
@@ -712,6 +774,7 @@ def pm_session_summary(
                 "decisions": latest.decisions,
                 "pending": latest.pending,
                 "created_at": latest.created_at,
+                "updated_at": latest.updated_at,
             }
 
         case "list":
@@ -723,6 +786,7 @@ def pm_session_summary(
                         "session_id": s.session_id,
                         "summary": s.summary[:100] + ("..." if len(s.summary) > 100 else ""),
                         "created_at": s.created_at,
+                        "updated_at": s.updated_at,
                     }
                     for s in summaries
                 ],

@@ -193,3 +193,157 @@ class TestServerToolMemoryCleanup:
         pm_memory_cleanup(keep_latest=2, dry_run=False)
         stats = pm_memory_stats()
         assert stats["total_memories"] == 2
+
+
+# ─── PMSERV-049: session_summaries upsert / list_within / migration ─────
+
+
+class TestSessionSummaryUpsert:
+    """UPSERT preserves created_at, refreshes updated_at on re-save."""
+
+    def test_save_session_summary_preserves_created_at_on_resave(self, memory_store: MemoryStore):
+        from pm_server.models import SessionSummary
+
+        memory_store.save_session_summary(
+            SessionSummary(session_id="sess-A", summary="first", project="p")
+        )
+        original = memory_store.get_latest_summary()
+        assert original is not None
+        original_created = original.created_at
+
+        import time
+
+        time.sleep(1.1)  # wait so datetime('now') ticks at least 1 second
+
+        memory_store.save_session_summary(
+            SessionSummary(session_id="sess-A", summary="second", project="p")
+        )
+        after = memory_store.get_latest_summary()
+        assert after is not None
+        # created_at must survive the UPSERT path
+        assert after.created_at == original_created
+        # And the new content is reflected
+        assert after.summary == "second"
+
+    def test_save_session_summary_updates_updated_at_on_resave(self, memory_store: MemoryStore):
+        from pm_server.models import SessionSummary
+
+        memory_store.save_session_summary(
+            SessionSummary(session_id="sess-B", summary="first", project="p")
+        )
+        original = memory_store.get_latest_summary()
+        assert original is not None
+        first_updated = original.updated_at
+        # On first save created_at == updated_at (both default datetime('now'))
+        assert original.updated_at == original.created_at
+
+        import time
+
+        time.sleep(1.1)
+
+        memory_store.save_session_summary(
+            SessionSummary(session_id="sess-B", summary="second", project="p")
+        )
+        after = memory_store.get_latest_summary()
+        assert after is not None
+        # updated_at must move forward — string-comparable since SQLite uses
+        # ISO-like 'YYYY-MM-DD HH:MM:SS' UTC literals
+        assert after.updated_at > first_updated
+
+
+class TestListSummariesWithin:
+    """list_summaries_within filters by updated_at (UTC)."""
+
+    def test_list_summaries_within_window_filters_by_updated_at(self, memory_store: MemoryStore):
+        from pm_server.models import SessionSummary
+
+        memory_store.save_session_summary(
+            SessionSummary(session_id="sess-recent", summary="recent", project="p")
+        )
+
+        # Plant an old row directly; bypass save_session_summary so we can
+        # set updated_at into the past.
+        memory_store._conn.execute(
+            """INSERT INTO session_summaries
+               (session_id, summary, goals, tasks_done, decisions, pending,
+                project, created_at, updated_at)
+               VALUES (?, ?, '', '[]', '[]', '[]', ?,
+                       datetime('now', '-2 hours'),
+                       datetime('now', '-2 hours'))""",
+            ("sess-old", "old summary", "p"),
+        )
+        memory_store._conn.commit()
+
+        within_30 = memory_store.list_summaries_within(window_minutes=30, limit=10)
+        within_30_ids = {s.session_id for s in within_30}
+        assert "sess-recent" in within_30_ids
+        assert "sess-old" not in within_30_ids
+
+        within_180 = memory_store.list_summaries_within(window_minutes=180, limit=10)
+        within_180_ids = {s.session_id for s in within_180}
+        assert "sess-recent" in within_180_ids
+        assert "sess-old" in within_180_ids
+
+
+class TestSchemaMigration:
+    """Existing v0.4.x DB without updated_at column auto-migrates on open."""
+
+    def test_existing_db_without_updated_at_column_migrates_correctly(self, tmp_path):
+        import sqlite3
+
+        from pm_server.memory import MemoryStore
+        from pm_server.models import SessionSummary
+
+        # Build a legacy-shaped DB (no updated_at column) by hand
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """CREATE TABLE session_summaries (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL UNIQUE,
+                summary     TEXT NOT NULL,
+                goals       TEXT,
+                tasks_done  TEXT,
+                decisions   TEXT,
+                pending     TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                project     TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO session_summaries
+               (session_id, summary, goals, tasks_done, decisions, pending, project)
+               VALUES ('sess-legacy', 'old', '', '[]', '[]', '[]', 'p')"""
+        )
+        conn.commit()
+        cols_before = [
+            r[1] for r in conn.execute("PRAGMA table_info(session_summaries)").fetchall()
+        ]
+        assert "updated_at" not in cols_before
+        conn.close()
+
+        # Opening with MemoryStore should run the migration
+        store = MemoryStore(db_path, global_db_path=None)
+        try:
+            cols_after = [
+                row["name"]
+                for row in store._conn.execute("PRAGMA table_info(session_summaries)").fetchall()
+            ]
+            assert "updated_at" in cols_after
+
+            row = store._conn.execute(
+                "SELECT created_at, updated_at FROM session_summaries WHERE session_id = ?",
+                ("sess-legacy",),
+            ).fetchone()
+            assert row is not None
+            assert row["updated_at"] == row["created_at"]
+
+            # And the UPSERT path works on the migrated DB
+            store.save_session_summary(
+                SessionSummary(session_id="sess-new", summary="post-migration", project="p")
+            )
+            latest = store.get_latest_summary()
+            assert latest is not None
+            assert latest.session_id == "sess-new"
+        finally:
+            store.close()

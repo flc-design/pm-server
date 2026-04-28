@@ -353,7 +353,14 @@ class Memory(BaseModel):
 
 
 class SessionSummary(BaseModel):
-    """Session summary for cross-session continuity."""
+    """Session summary for cross-session continuity.
+
+    `created_at` is the original creation timestamp (preserved across re-saves).
+    `updated_at` is the latest save timestamp (refreshed by save_session_summary
+    when the same session_id is saved again). Use updated_at for ambiguity
+    detection windows so still-active sessions are captured even when their
+    initial summary was created long ago.
+    """
 
     id: int | None = None
     session_id: str
@@ -363,6 +370,7 @@ class SessionSummary(BaseModel):
     decisions: list[str] = Field(default_factory=list)
     pending: list[str] = Field(default_factory=list)
     created_at: str = ""
+    updated_at: str = ""
     project: str = ""
 
 

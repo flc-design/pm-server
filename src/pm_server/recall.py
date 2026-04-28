@@ -49,9 +49,15 @@ class ContextBuilder:
     # Default budget allocation per layer
     LAYER_BUDGETS = (200, 500, 300, 0)  # Layer 4 gets remainder
 
-    def __init__(self, memory_store: MemoryStore, pm_path: Path) -> None:
+    def __init__(
+        self,
+        memory_store: MemoryStore,
+        pm_path: Path,
+        current_session_id: str | None = None,
+    ) -> None:
         self.store = memory_store
         self.pm_path = pm_path
+        self.current_session_id = current_session_id
 
     def build_session_context(self, max_tokens: int = 2000) -> str:
         """Generate context block for session start.
@@ -107,7 +113,11 @@ class ContextBuilder:
         if summary is None:
             return ""
 
-        lines = [f"### 前回のセッション ({summary.session_id})"]
+        marker = ""
+        if self.current_session_id is not None and summary.session_id != self.current_session_id:
+            marker = " ⚠️ 別セッション"
+
+        lines = [f"### 前回のセッション ({summary.session_id}){marker}"]
         lines.append(f"**要約**: {summary.summary}")
         if summary.goals:
             lines.append(f"**目標**: {summary.goals}")

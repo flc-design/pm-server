@@ -310,3 +310,60 @@ class TestClaudeMdV3:
         from pm_server.claudemd import CLAUDEMD_TEMPLATE
 
         assert "other_rule_sections" in CLAUDEMD_TEMPLATE
+
+
+# ─── PMSERV-049: ContextBuilder session-self-id marker ─────────────
+
+
+class TestContextBuilderSessionMarker:
+    """Layer 1 marks the summary as foreign when current_session_id differs."""
+
+    def test_summary_marker_when_same_session(self, ctx_store: MemoryStore, context_project: Path):
+        ctx_store.save_session_summary(
+            SessionSummary(
+                session_id="sess-self",
+                summary="my own work",
+                project="ctxproj",
+            )
+        )
+        builder = ContextBuilder(
+            ctx_store,
+            context_project / ".pm",
+            current_session_id="sess-self",
+        )
+        result = builder.build_session_context()
+        assert "別セッション" not in result
+
+    def test_summary_marker_when_different_session(
+        self, ctx_store: MemoryStore, context_project: Path
+    ):
+        ctx_store.save_session_summary(
+            SessionSummary(
+                session_id="sess-other",
+                summary="other session work",
+                project="ctxproj",
+            )
+        )
+        builder = ContextBuilder(
+            ctx_store,
+            context_project / ".pm",
+            current_session_id="sess-self",
+        )
+        result = builder.build_session_context()
+        assert "別セッション" in result
+
+    def test_summary_marker_omitted_without_current_session_id(
+        self, ctx_store: MemoryStore, context_project: Path
+    ):
+        # Backward compat: caller that doesn't pass current_session_id
+        # gets the same output as v0.4.x.
+        ctx_store.save_session_summary(
+            SessionSummary(
+                session_id="sess-anything",
+                summary="some work",
+                project="ctxproj",
+            )
+        )
+        builder = ContextBuilder(ctx_store, context_project / ".pm")
+        result = builder.build_session_context()
+        assert "別セッション" not in result

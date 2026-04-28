@@ -706,3 +706,139 @@ class TestPmRememberAutoLink:
             project_path=str(initialized_project),
         )
         assert "auto_linked_task" not in result
+
+
+# ─── PMSERV-049: pm_recall multi-session disambiguation ─────────────
+
+
+class TestPmRecall:
+    """pm_recall returns current_session_id, ambiguity_detected, candidates."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_project(self, tmp_project, monkeypatch):
+        from pm_server.models import Project
+        from pm_server.storage import save_project as _save
+
+        pm_path = tmp_project / ".pm"
+        _save(pm_path, Project(name="testproj", display_name="Test"))
+        monkeypatch.chdir(tmp_project)
+
+        import pm_server.server
+
+        pm_server.server._memory_stores.clear()
+        monkeypatch.delenv("PM_SERVER_RECALL_AMBIGUITY_WINDOW_MIN", raising=False)
+
+    @staticmethod
+    def _force_session(monkeypatch, session_id: str):
+        import pm_server.server
+
+        monkeypatch.setattr(pm_server.server, "_current_session_id", session_id)
+
+    def test_recall_default_returns_current_session_id(self, monkeypatch):
+        self._force_session(monkeypatch, "sess-test-current")
+        from pm_server.server import pm_recall
+
+        result = pm_recall()
+        assert result["current_session_id"] == "sess-test-current"
+
+    def test_recall_default_with_single_session_no_ambiguity(self, monkeypatch):
+        self._force_session(monkeypatch, "sess-A")
+        from pm_server.server import pm_recall, pm_session_summary
+
+        pm_session_summary(action="save", summary="Self session work")
+        result = pm_recall()
+        assert result["ambiguity_detected"] is False
+        assert "last_session_candidates" not in result
+
+    def test_recall_default_with_multiple_sessions_recent(self, monkeypatch):
+        from pm_server.models import SessionSummary
+        from pm_server.server import _get_memory_store, pm_recall
+
+        self._force_session(monkeypatch, "sess-A")
+        store = _get_memory_store(None)
+        store.save_session_summary(
+            SessionSummary(session_id="sess-A", summary="A's work", project="testproj")
+        )
+        store.save_session_summary(
+            SessionSummary(session_id="sess-B", summary="B's work", project="testproj")
+        )
+
+        result = pm_recall()
+        assert result["ambiguity_detected"] is True
+        assert "last_session_candidates" in result
+        candidate_ids = {c["session_id"] for c in result["last_session_candidates"]}
+        assert {"sess-A", "sess-B"}.issubset(candidate_ids)
+        for c in result["last_session_candidates"]:
+            if c["session_id"] == "sess-A":
+                assert c["is_current_session"] is True
+            else:
+                assert c["is_current_session"] is False
+
+    def test_recall_default_with_old_other_session_outside_window(self, monkeypatch):
+        from pm_server.models import SessionSummary
+        from pm_server.server import _get_memory_store, pm_recall
+
+        self._force_session(monkeypatch, "sess-A")
+        store = _get_memory_store(None)
+        store._conn.execute(
+            """INSERT INTO session_summaries
+               (session_id, summary, goals, tasks_done, decisions, pending,
+                project, created_at, updated_at)
+               VALUES (?, ?, '', '[]', '[]', '[]', ?,
+                       datetime('now', '-2 hours'),
+                       datetime('now', '-2 hours'))""",
+            ("sess-old", "old work", "testproj"),
+        )
+        store._conn.commit()
+        store.save_session_summary(
+            SessionSummary(session_id="sess-A", summary="recent", project="testproj")
+        )
+
+        result = pm_recall()
+        # Other session is outside window → ambiguity should not fire
+        assert result["ambiguity_detected"] is False
+
+    def test_recall_default_backward_compat_last_session_shape(self, monkeypatch):
+        self._force_session(monkeypatch, "sess-A")
+        from pm_server.server import pm_recall, pm_session_summary
+
+        pm_session_summary(action="save", summary="content", goals="g", pending="p1,p2")
+        result = pm_recall()
+        # Legacy 5 keys + updated_at = 6 keys exactly
+        assert set(result["last_session"].keys()) == {
+            "session_id",
+            "summary",
+            "goals",
+            "pending",
+            "created_at",
+            "updated_at",
+        }
+
+    def test_recall_with_query_no_ambiguity_field(self, monkeypatch):
+        self._force_session(monkeypatch, "sess-A")
+        from pm_server.server import pm_recall, pm_remember
+
+        pm_remember(content="searchable content")
+        result = pm_recall(query="searchable")
+        # Ambiguity is a default-branch concept only
+        assert "ambiguity_detected" not in result
+        assert "last_session_candidates" not in result
+
+    def test_recall_default_no_ambiguity_omits_candidates_field(self, monkeypatch):
+        self._force_session(monkeypatch, "sess-A")
+        from pm_server.server import pm_recall, pm_session_summary
+
+        pm_session_summary(action="save", summary="lone session")
+        result = pm_recall()
+        assert result["ambiguity_detected"] is False
+        # Optional field must be absent (not just falsy)
+        assert "last_session_candidates" not in result
+
+    def test_recall_cross_project_includes_current_session_id(self, monkeypatch):
+        self._force_session(monkeypatch, "sess-cross")
+        from pm_server.server import pm_recall, pm_remember
+
+        pm_remember(content="cross test data")
+        result = pm_recall(query="cross test", cross_project=True)
+        assert result["current_session_id"] == "sess-cross"
+        assert result["cross_project"] is True

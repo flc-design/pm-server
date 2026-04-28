@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     decisions   TEXT,
     pending     TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     project     TEXT NOT NULL
 );
 """
@@ -191,6 +192,30 @@ class MemoryStore:
         cur.executescript(_FTS_SCHEMA_SQL)
         cur.executescript(_TRIGGER_SQL)
         self._conn.commit()
+        self._migrate_session_summaries_updated_at()
+
+    def _migrate_session_summaries_updated_at(self) -> None:
+        """Add updated_at column for DBs created before PMSERV-049.
+
+        Idempotent: skips ALTER if the column already exists. Backfills
+        updated_at with created_at so pre-migration rows have a sane
+        latest-save timestamp. Always (re)creates the supporting index
+        — safe because the column is guaranteed to exist after this method.
+        """
+        cur = self._conn.cursor()
+        cols = [
+            row["name"] for row in cur.execute("PRAGMA table_info(session_summaries)").fetchall()
+        ]
+        if "updated_at" not in cols:
+            cur.execute("ALTER TABLE session_summaries ADD COLUMN updated_at TEXT")
+            cur.execute(
+                "UPDATE session_summaries SET updated_at = created_at WHERE updated_at IS NULL"
+            )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_summaries_updated_at"
+            " ON session_summaries(updated_at)"
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
@@ -280,11 +305,23 @@ class MemoryStore:
     # ─── Session Summaries ──────────────────────────
 
     def save_session_summary(self, summary: SessionSummary) -> int:
-        """Save a session summary. Replaces if session_id already exists."""
-        cur = self._conn.execute(
-            """INSERT OR REPLACE INTO session_summaries
+        """Save a session summary via UPSERT.
+
+        On first save: created_at and updated_at both default to datetime('now').
+        On re-save (same session_id): preserves created_at, refreshes updated_at.
+        Returns the row id of the inserted-or-updated row.
+        """
+        self._conn.execute(
+            """INSERT INTO session_summaries
                (session_id, summary, goals, tasks_done, decisions, pending, project)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   summary = excluded.summary,
+                   goals = excluded.goals,
+                   tasks_done = excluded.tasks_done,
+                   decisions = excluded.decisions,
+                   pending = excluded.pending,
+                   updated_at = datetime('now')""",
             (
                 summary.session_id,
                 summary.summary,
@@ -296,7 +333,11 @@ class MemoryStore:
             ),
         )
         self._conn.commit()
-        return cur.lastrowid  # type: ignore[return-value]
+        row = self._conn.execute(
+            "SELECT id FROM session_summaries WHERE session_id = ?",
+            (summary.session_id,),
+        ).fetchone()
+        return row["id"]
 
     def get_latest_summary(self) -> SessionSummary | None:
         """Get the most recent session summary."""
@@ -312,6 +353,28 @@ class MemoryStore:
         rows = self._conn.execute(
             "SELECT * FROM session_summaries ORDER BY id DESC LIMIT ?",
             (limit,),
+        ).fetchall()
+        return [self._row_to_summary(r) for r in rows]
+
+    def list_summaries_within(
+        self,
+        window_minutes: int = 30,
+        limit: int = 10,
+    ) -> list[SessionSummary]:
+        """Return session summaries updated within the last N minutes (UTC).
+
+        Window comparison uses SQLite ``datetime('now', '-N minutes')`` which
+        evaluates in UTC. ``updated_at`` reflects the latest save for each
+        session, so still-active sessions are captured even when their initial
+        summary was created long ago. Boundary is inclusive: a summary updated
+        exactly N minutes ago is included. Used by pm_recall ambiguity
+        detection (PMSERV-049).
+        """
+        rows = self._conn.execute(
+            """SELECT * FROM session_summaries
+               WHERE updated_at >= datetime('now', ?)
+               ORDER BY updated_at DESC LIMIT ?""",
+            (f"-{window_minutes} minutes", limit),
         ).fetchall()
         return [self._row_to_summary(r) for r in rows]
 
@@ -334,7 +397,13 @@ class MemoryStore:
 
     @staticmethod
     def _row_to_summary(row: sqlite3.Row) -> SessionSummary:
-        """Convert a database row to a SessionSummary model."""
+        """Convert a database row to a SessionSummary model.
+
+        Falls back to created_at when updated_at is missing (defensive: the
+        migration backfills updated_at from created_at, so this only matters
+        if a row is somehow inserted before the migration runs).
+        """
+        updated_at = row["updated_at"] if "updated_at" in row.keys() else None
         return SessionSummary(
             id=row["id"],
             session_id=row["session_id"],
@@ -344,6 +413,7 @@ class MemoryStore:
             decisions=_json_to_list(row["decisions"]),
             pending=_json_to_list(row["pending"]),
             created_at=row["created_at"],
+            updated_at=updated_at or row["created_at"],
             project=row["project"],
         )
 
