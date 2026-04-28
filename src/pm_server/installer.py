@@ -3,9 +3,11 @@
 Registers (or unregisters) pm-server as an MCP server in supported hosts.
 
 Hosts:
-    - Claude Code: implemented (uses ``claude mcp add`` user scope).
-    - Codex CLI: stub only — the real implementation lands in PMSERV-038
-      (edits ``~/.codex/config.toml`` via tomlkit with backup + idempotency).
+    - Claude Code: registers via ``claude mcp add`` (user scope).
+    - Codex CLI: edits ``~/.codex/config.toml`` via tomlkit with
+      timestamped backup, idempotent field-level updates, and atomic
+      write. Sub-tables under ``[mcp_servers.pm-server.*]`` (such as
+      per-tool ``approval_mode`` customizations) are preserved.
 
 Public surface:
     - ``install(target="claude-code") / uninstall(target="claude-code")``:
@@ -13,7 +15,8 @@ Public surface:
       failure into a structured ``InstallResult`` entry.
     - ``install_claude_code() / uninstall_claude_code()``: per-host
       functions returning ``InstallResult``.
-    - ``install_codex() / uninstall_codex()``: no-op stubs (PMSERV-038).
+    - ``install_codex() / uninstall_codex()``: per-host functions for
+      Codex CLI.
     - ``install_mcp() / uninstall_mcp()``: backward-compat wrappers
       preserved from v0.4.x; return the Claude Code message string.
     - ``migrate_from_pm_agent()``: unchanged migration helper.
@@ -21,11 +24,16 @@ Public surface:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+
+import tomlkit
 
 # --- Result types ---------------------------------------------------------
 
@@ -187,28 +195,188 @@ def uninstall_claude_code() -> InstallResult:
     )
 
 
-# --- Host: Codex CLI (stubs; real implementation in PMSERV-038) -----------
+# --- Host: Codex CLI ------------------------------------------------------
+
+
+def _codex_config_path() -> Path:
+    """Return the Codex CLI config path (lazy; honors monkeypatched HOME)."""
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _resolve_pm_server_path() -> Path:
+    """Resolve the absolute pm-server binary path for sandbox-safe registration.
+
+    Codex sandboxes restrict PATH inheritance, so a bare ``pm-server``
+    name does not resolve. The canonical location is the binary in the
+    same directory as the running Python interpreter (works for pip /
+    pipx / pyenv / venv installations). Falls back to ``shutil.which``
+    only if the canonical location is missing.
+
+    Raises:
+        FileNotFoundError: if pm-server cannot be located.
+    """
+    candidate = Path(sys.executable).resolve().parent / "pm-server"
+    if candidate.exists():
+        return candidate
+    fallback = shutil.which("pm-server")
+    if fallback:
+        return Path(fallback).resolve()
+    raise FileNotFoundError("pm-server binary not found")
+
+
+def _backup_codex_config(config_path: Path) -> Path:
+    """Create a timestamped backup of the Codex config before mutating.
+
+    Uses ``shutil.copy2`` to preserve mtime and permissions.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = config_path.with_name(f"{config_path.name}.bak.{timestamp}")
+    shutil.copy2(config_path, backup_path)
+    return backup_path
+
+
+def _atomic_write_toml(path: Path, doc: tomlkit.TOMLDocument) -> None:
+    """Write a TOML document atomically (tempfile + os.replace).
+
+    Local helper. PMSERV-048 will introduce a project-wide atomic-write
+    utility for all config files.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def install_codex() -> InstallResult:
-    """Stub for Codex CLI installation.
+    """Register pm-server as a Codex CLI MCP server.
 
-    Until PMSERV-038 lands the tomlkit-based ``~/.codex/config.toml``
-    editor, this returns ``status="skipped"``.
+    Edits ``~/.codex/config.toml`` via tomlkit:
+        - Detect: skip if config.toml does not exist (no side effect on
+          non-Codex installations).
+        - Resolve: absolute pm-server path via :func:`_resolve_pm_server_path`.
+        - Backup: timestamped copy under ``~/.codex/config.toml.bak.<ts>``.
+        - Update: field-level edits to ``[mcp_servers.pm-server]`` so any
+          user-defined sub-tables (such as per-tool ``approval_mode``
+          customizations) and surrounding comments are preserved.
+        - Atomic write: tempfile + os.replace.
+
+    Returns:
+        ``InstallResult`` with ``target="codex"``. On install/update,
+        ``backup_path`` points at the saved-aside copy.
     """
+    config_path = _codex_config_path()
+    if not config_path.exists():
+        return InstallResult(
+            target="codex",
+            status="skipped",
+            message="~/.codex/config.toml not found — Codex CLI not installed",
+        )
+
+    pm_server_path = _resolve_pm_server_path()
+
+    doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+
+    # Early return if already registered with matching command — no mutation,
+    # so no backup or atomic-write needed (avoids backup file accumulation).
+    if "mcp_servers" in doc and "pm-server" in doc["mcp_servers"]:
+        existing_command = doc["mcp_servers"]["pm-server"].get("command")
+        if existing_command is not None and str(existing_command) == str(pm_server_path):
+            return InstallResult(
+                target="codex",
+                status="already_registered",
+                message="PM Server is already registered in Codex",
+            )
+
+    backup_path = _backup_codex_config(config_path)
+
+    if "mcp_servers" not in doc:
+        doc["mcp_servers"] = tomlkit.table()
+    if "pm-server" not in doc["mcp_servers"]:
+        section = tomlkit.table()
+        section["command"] = str(pm_server_path)
+        section["args"] = ["serve"]
+        section["startup_timeout_sec"] = 30
+        doc["mcp_servers"]["pm-server"] = section
+        message = (
+            f"PM Server registered in Codex (user scope). "
+            f"Backup at {backup_path}. Restart Codex to activate."
+        )
+    else:
+        section = doc["mcp_servers"]["pm-server"]
+        section["command"] = str(pm_server_path)
+        section["args"] = ["serve"]
+        if "startup_timeout_sec" not in section:
+            section["startup_timeout_sec"] = 30
+        message = (
+            f"PM Server command updated in Codex (path changed). "
+            f"Backup at {backup_path}. Restart Codex to activate."
+        )
+
+    _atomic_write_toml(config_path, doc)
+
     return InstallResult(
         target="codex",
-        status="skipped",
-        message="codex installer not yet implemented (PMSERV-038)",
+        status="installed",
+        message=message,
+        backup_path=str(backup_path),
     )
 
 
 def uninstall_codex() -> InstallResult:
-    """Stub for Codex CLI uninstall. Real impl: PMSERV-038."""
+    """Remove pm-server registration from Codex CLI config.
+
+    Removes only the top-level fields (``command``, ``args``,
+    ``startup_timeout_sec``). If the user has customized sub-tables
+    such as ``[mcp_servers.pm-server.tools.pm_init]``, the parent
+    section is preserved with a notice in the result message —
+    those customizations are left untouched and require manual
+    cleanup if no longer wanted.
+
+    Returns:
+        ``InstallResult`` with ``target="codex"``.
+    """
+    config_path = _codex_config_path()
+    if not config_path.exists():
+        return InstallResult(
+            target="codex",
+            status="skipped",
+            message="~/.codex/config.toml not found — nothing to uninstall",
+        )
+
+    doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+
+    if "mcp_servers" not in doc or "pm-server" not in doc["mcp_servers"]:
+        return InstallResult(
+            target="codex",
+            status="skipped",
+            message="pm-server not registered in Codex",
+        )
+
+    backup_path = _backup_codex_config(config_path)
+
+    section = doc["mcp_servers"]["pm-server"]
+    for key in ("command", "args", "startup_timeout_sec"):
+        if key in section:
+            del section[key]
+
+    if not section:
+        del doc["mcp_servers"]["pm-server"]
+        if not doc["mcp_servers"]:
+            del doc["mcp_servers"]
+        message = f"PM Server unregistered from Codex. Backup at {backup_path}."
+    else:
+        message = (
+            "PM Server top-level fields removed from Codex. "
+            "Sub-tables preserved — remove manually if no longer needed. "
+            f"Backup at {backup_path}."
+        )
+
+    _atomic_write_toml(config_path, doc)
+
     return InstallResult(
         target="codex",
-        status="skipped",
-        message="codex uninstaller not yet implemented (PMSERV-038)",
+        status="uninstalled",
+        message=message,
+        backup_path=str(backup_path),
     )
 
 
