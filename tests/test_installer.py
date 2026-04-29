@@ -277,6 +277,20 @@ class TestInstallOrchestrator:
         with pytest.raises(ValueError, match="unknown target"):
             install(target="banana")
 
+    def test_uninstall_target_claude_code_directly(self):
+        """uninstall(target='claude-code') dispatches to uninstall_claude_code (PMSERV-040)."""
+        with (
+            patch("pm_server.installer.shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "pm_server.installer.subprocess.run",
+                return_value=_make_result(0),
+            ),
+        ):
+            summary = uninstall(target="claude-code")
+        assert len(summary.results) == 1
+        assert summary.results[0].target == "claude-code"
+        assert summary.results[0].status == "uninstalled"
+
 
 class TestInstallSummary:
     """InstallSummary aggregation (PMSERV-037)."""
@@ -321,6 +335,16 @@ class TestInstallSummary:
     def test_message_when_empty(self):
         s = InstallSummary()
         assert s.message == "no targets processed"
+
+    def test_overall_status_installed_when_skipped_mixed(self):
+        """installed + skipped mixture resolves to 'installed' (PMSERV-040)."""
+        s = InstallSummary(
+            results=[
+                InstallResult("claude-code", "installed", "ok"),
+                InstallResult("codex", "skipped", "config not found"),
+            ]
+        )
+        assert s.overall_status == "installed"
 
 
 class TestResolvePmServerPath:
@@ -510,6 +534,93 @@ class TestInstallCodex:
         doc = tomlkit.parse(fake_codex_config.read_text())
         assert "pm-server" in doc["mcp_servers"]
 
+    def test_install_codex_twice_second_returns_already_registered(
+        self, fake_codex_config, tmp_path, monkeypatch
+    ):
+        """Second install_codex returns already_registered without extra backup (PMSERV-040)."""
+        self._make_pm_server_resolvable(tmp_path, monkeypatch)
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                [mcp_servers.filesystem]
+                command = "npx"
+                """
+            )
+        )
+
+        first = install_codex()
+        assert first.status == "installed"
+        assert first.backup_path is not None
+
+        second = install_codex()
+        assert second.status == "already_registered"
+        assert second.backup_path is None
+
+        backups = list(fake_codex_config.parent.glob("config.toml.bak.*"))
+        assert len(backups) == 1
+
+    def test_install_codex_preserves_inline_comment_on_other_keys(
+        self, fake_codex_config, tmp_path, monkeypatch
+    ):
+        """tomlkit inline comments on other-server keys survive round-trip (PMSERV-040)."""
+        self._make_pm_server_resolvable(tmp_path, monkeypatch)
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                [mcp_servers.filesystem]
+                command = "npx"  # the npx runtime
+                args = ["-y", "@modelcontextprotocol/server-filesystem"]
+                """
+            )
+        )
+
+        result = install_codex()
+        assert result.status == "installed"
+        new_text = fake_codex_config.read_text()
+        assert "# the npx runtime" in new_text
+
+    def test_install_codex_when_mcp_servers_section_absent(
+        self, fake_codex_config, tmp_path, monkeypatch
+    ):
+        """install_codex creates [mcp_servers] when the section itself is absent (PMSERV-040)."""
+        pm_path = self._make_pm_server_resolvable(tmp_path, monkeypatch)
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                # User config without any mcp_servers
+                model = "gpt-4o"
+                """
+            )
+        )
+
+        result = install_codex()
+        assert result.status == "installed"
+        doc = tomlkit.parse(fake_codex_config.read_text())
+        assert "mcp_servers" in doc
+        assert "pm-server" in doc["mcp_servers"]
+        assert str(doc["mcp_servers"]["pm-server"]["command"]) == str(pm_path)
+        assert str(doc["model"]) == "gpt-4o"
+
+    def test_install_codex_existing_section_without_startup_timeout(
+        self, fake_codex_config, tmp_path, monkeypatch
+    ):
+        """install_codex backfills startup_timeout_sec when missing (PMSERV-040, line 308)."""
+        self._make_pm_server_resolvable(tmp_path, monkeypatch)
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                [mcp_servers.pm-server]
+                command = "/old/pm-server"
+                args = ["serve"]
+                """
+            )
+        )
+
+        result = install_codex()
+        assert result.status == "installed"
+        doc = tomlkit.parse(fake_codex_config.read_text())
+        assert doc["mcp_servers"]["pm-server"]["startup_timeout_sec"] == 30
+
 
 class TestUninstallCodex:
     """uninstall_codex against a tmp_path Codex config (PMSERV-038)."""
@@ -591,3 +702,99 @@ class TestUninstallCodex:
         backup = Path(result.backup_path)
         assert backup.exists()
         assert "pm-server" in backup.read_text()
+
+    def test_uninstall_codex_twice_second_returns_skipped(self, fake_codex_config):
+        """Second uninstall_codex skips when pm-server not registered (PMSERV-040)."""
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                [mcp_servers.pm-server]
+                command = "/some/pm-server"
+                args = ["serve"]
+                """
+            )
+        )
+
+        first = uninstall_codex()
+        assert first.status == "uninstalled"
+
+        second = uninstall_codex()
+        assert second.status == "skipped"
+        assert "not registered" in second.message.lower()
+        assert second.backup_path is None
+
+    def test_uninstall_codex_preserves_top_of_file_comment(self, fake_codex_config):
+        """uninstall_codex preserves a top-of-file comment after mutation (PMSERV-040)."""
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                # Top-of-file comment
+                [mcp_servers.pm-server]
+                command = "/some/pm-server"
+                args = ["serve"]
+                """
+            )
+        )
+
+        uninstall_codex()
+        new_text = fake_codex_config.read_text()
+        assert "# Top-of-file comment" in new_text
+
+    def test_uninstall_codex_preserves_other_section_comments(self, fake_codex_config):
+        """uninstall_codex preserves comments tied to unrelated server sections (PMSERV-040)."""
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                # Filesystem MCP server
+                [mcp_servers.filesystem]
+                command = "npx"
+                args = ["-y", "@modelcontextprotocol/server-filesystem"]
+
+                [mcp_servers.pm-server]
+                command = "/some/pm-server"
+                args = ["serve"]
+                """
+            )
+        )
+
+        uninstall_codex()
+        new_text = fake_codex_config.read_text()
+        assert "# Filesystem MCP server" in new_text
+        assert "[mcp_servers.filesystem]" in new_text
+
+
+class TestCodexLifecycle:
+    """install -> uninstall -> install roundtrip state-transition coverage (PMSERV-040)."""
+
+    def test_install_uninstall_install_codex_roundtrip(
+        self, fake_codex_config, tmp_path, monkeypatch
+    ):
+        pm_path = TestInstallCodex._make_pm_server_resolvable(tmp_path, monkeypatch)
+        fake_codex_config.write_text(
+            textwrap.dedent(
+                """\
+                [mcp_servers.filesystem]
+                command = "npx"
+                """
+            )
+        )
+
+        r1 = install_codex()
+        assert r1.status == "installed"
+        doc = tomlkit.parse(fake_codex_config.read_text())
+        assert "pm-server" in doc["mcp_servers"]
+
+        r2 = uninstall_codex()
+        assert r2.status == "uninstalled"
+        doc = tomlkit.parse(fake_codex_config.read_text())
+        assert "pm-server" not in doc.get("mcp_servers", {})
+        assert "filesystem" in doc.get("mcp_servers", {})
+
+        r3 = install_codex()
+        assert r3.status == "installed"
+        doc = tomlkit.parse(fake_codex_config.read_text())
+        assert str(doc["mcp_servers"]["pm-server"]["command"]) == str(pm_path)
+        assert "filesystem" in doc["mcp_servers"]
+
+        backups = list(fake_codex_config.parent.glob("config.toml.bak.*"))
+        assert len(backups) >= 1
