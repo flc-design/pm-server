@@ -9,8 +9,55 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    # Gate the irreversible publish on the TAGGED commit (2026-07-25). Two gaps
+    # made a bad tag ship silently: ci.yml has no tag trigger, so nothing tested
+    # what was actually tagged; and `skip-existing: true` below — added after the
+    # v0.12.1 wrapper incident — turns a tag/version mismatch from a loud PyPI
+    # "400 File already exists" into a green no-op that publishes nothing while
+    # the Release page announces a new version. Both are fail-fast here instead.
+    name: Verify the tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Tag name must match the tagged tree's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # v0.13.0 -> 0.13.0; a wrapper-republish tag v0.12.1-wrapper.1 -> 0.12.1
+          expected="${TAG#v}"; expected="${expected%%-*}"
+          actual="$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::tag $TAG expects version $expected but the tagged tree has $actual — the version bump is probably uncommitted"
+            exit 1
+          fi
+          echo "tag $TAG matches pyproject $actual"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint with ruff
+        run: ruff check src/ tests/
+
+      - name: Format check with ruff
+        run: ruff format --check src/ tests/
+
+      - name: Run tests
+        run: pytest -q
+
   build:
     name: Build distributions
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -125,8 +172,19 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-          title="$(git tag -l --format='%(contents:subject)' "$TAG")"
-          git tag -l --format='%(contents:body)' "$TAG" > notes.md
+          # %(contents:*) is only meaningful for an ANNOTATED tag. On a
+          # lightweight tag it resolves to the COMMIT message, which would
+          # publish the commit subject and its trailers (Co-Authored-By etc.)
+          # as the public release notes. Detect the object type instead of
+          # trusting the format string.
+          if [ "$(git cat-file -t "refs/tags/$TAG")" = "tag" ]; then
+            title="$(git tag -l --format='%(contents:subject)' "$TAG")"
+            git tag -l --format='%(contents:body)' "$TAG" > notes.md
+          else
+            echo "::warning::$TAG is a lightweight tag — falling back to the CHANGELOG pointer instead of the commit message"
+            title=""
+            : > notes.md
+          fi
           test -s notes.md || echo "See CHANGELOG.md for details." > notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists — skipping"

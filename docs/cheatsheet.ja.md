@@ -1,7 +1,7 @@
 # PM Lens チートシート
 
 > Claude Code + Codex CLI 用プロジェクト管理 MCP Server — **44 ツール**
-> Version 0.12.1 | Python 3.11+ | PyPI: `pmlens`
+> Version 0.13.0 | Python 3.11+ | PyPI: `pmlens`
 
 ---
 

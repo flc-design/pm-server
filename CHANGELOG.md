@@ -2,46 +2,70 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-25
+
+Auto-memory becomes searchable across projects, and two irreversible memory
+operations trade after-the-fact warnings for pre-flight gates. This release
+also fixes a long-standing bug that made *every* cross-project search return
+empty for read-only viewers. MCP tool count: 43 → 44. Test suite: 1,383
+passing. ADR-044, ADR-045, ADR-046.
+
 ### Added
 
 - **Physical auto-memory ingest for cross-project search (PMSERV-156,
-  ADR-045)**: a new `pm_memory_ingest` tool indexes Claude Code's auto-memory
-  notes (`~/.claude/projects/<repo>/memory/*.md`) into the global
+  ADR-045/046)**: a new `pm_memory_ingest` tool indexes Claude Code's
+  auto-memory notes (`~/.claude/projects/<repo>/memory/*.md`) into the global
   cross-project index. Until now those notes were reachable only through
   `pm_recall(include_auto_memory=true)` for the *current* project — the
   `cross_project=true` branch returns before any overlay runs, so the flag was
   silently inert there and the notes were structurally invisible to
   cross-project search (measured on a real corpus: 850 distinct tokens present
   in 150 notes across 20 projects and absent from the ledger).
-  `scope="project"` (the default) indexes only this repo; `scope="all"` sweeps
-  every store and raises an `auto_memory_ingested_all_projects` warning naming
-  the projects, because it publishes other projects' notes — private ones
-  included — into a shared index. `purge=true` is the undo. Rows land ONLY in
-  the derived `memory_index`, never in a project ledger, so `pm_remember`
-  stays the source of truth (PMSERV-111's no-dual-write rule) and the `.md`
-  files stay the source of truth for auto-memory. Re-ingest is idempotent by
-  content hash and implemented as DELETE-then-INSERT: the global FTS5 table is
-  external-content with only after-insert and after-delete triggers, so an
-  `UPDATE` would leave the previous text searchable and the new text missing,
-  silently. Pruning of vanished notes is scoped to the directories the call
-  actually scanned SUCCESSFULLY, so a project-scoped run can never delete
-  another project's rows and an unreadable directory is skipped-and-reported
-  instead of masquerading as empty (which used to prune every row under it).
-  `memory_index` gains `source` / `source_path` / `content_hash` via
-  backward-compatible `ADD COLUMN` (existing rows default to `source='pm'`),
-  and cross-project results now carry that provenance (`source_path` is the
-  absolute path — deliberately not the overlay's basename-valued
-  `source_file` key). Writing is gated off under `PM_LENS=1` while the Lens
-  viewer CAN search the ingested rows: a readonly store keeps the global
-  index path and reads it via `mode=ro&immutable=1` (no sidecars in `~/.pm`),
-  with writes refused by the store itself as defense-in-depth — the previous
-  wiring nulled the path and silently returned `[]` for every Lens
-  cross-project search.
+
+  The safety boundary is a **fact-based gate**, not the `scope` parameter:
+  a real run whose collected notes reach beyond this project's own
+  auto-memory directories — whether through `scope="all"` or an
+  `auto_memory_path` override — is refused with `blocked=true` and nothing
+  written, because it would publish other projects' notes (private ones
+  included) into a shared index. `force=true` is the explicit override and a
+  dry-run predicts the refusal via `would_block`; the blocked and forced
+  warning codes are mutually exclusive. Judging the parameter instead of the
+  outcome left the override as an unguarded bypass, so the check moved to
+  what was actually collected. `purge=true` is the undo — never gated, since
+  the gate's own remediation points at it — and it reports which projects it
+  removed rows for.
+
+  Rows land ONLY in the derived `memory_index`, never in a project ledger, so
+  `pm_remember` stays the source of truth (PMSERV-111's no-dual-write rule)
+  and the `.md` files stay the source of truth for auto-memory. Re-ingest is
+  idempotent by content hash and implemented as DELETE-then-INSERT: the
+  global FTS5 table is external-content with only after-insert and
+  after-delete triggers, so an `UPDATE` would leave the previous text
+  searchable and the new text missing, silently. Pruning of vanished notes is
+  scoped to the directories a call scanned *successfully* — directory
+  listing uses `os.listdir` because `pathlib.glob()` swallows
+  `PermissionError` and returns empty, which made an unreadable directory
+  look like a successfully-scanned empty one and pruned every row beneath it.
+  Scan paths are resolved on both sides of every comparison so a symlinked
+  project root no longer re-ingests every note as new on each run, and a repo
+  whose encoding drift gave it several store directories dedups to one row
+  per note — identity comes from the repo's registered root, so under
+  `scope="all"` this holds for repos present in `~/.pm/registry.yaml`. `memory_index` gains `source` / `source_path` / `content_hash`
+  via backward-compatible `ADD COLUMN` (existing rows default to
+  `source='pm'`), and cross-project results now carry that provenance —
+  `source_path` holds the absolute path, deliberately not reusing the
+  overlay's basename-valued `source_file` key. Index timestamps are written
+  in the ledger's UTC space-separated format (a local `T`-separated value
+  sorted after every ledger row in the fallback's `ORDER BY created_at`).
+  `dry_run` is a pure preview of the index write: it creates no global
+  index and migrates no schema. (Opening any memory tool still
+  materialises the project's own `.pm/memory.db` if absent — unchanged
+  from previous releases.)
 
 ### Changed
 
 - **Session-summary pruning now gates on the ambiguity window instead of
-  reporting after the fact (PMSERV-163)**: `pm_memory_cleanup(
+  reporting after the fact (PMSERV-163, ADR-044)**: `pm_memory_cleanup(
   summaries_keep_latest=N, dry_run=False)` refuses to run when its delete set
   reaches into the recent ambiguity window — the rows whose removal disables
   `pm_recall`'s concurrent-session detection. The call returns
@@ -59,14 +83,36 @@
 
 ### Fixed
 
-- **`pm_memory_cleanup(keep_latest=...)` floor asymmetry (PMSERV-164)**: the
-  memories path accepted values the summaries path had rejected since
-  PMSERV-162, and both out-of-range values were traps rather than useful
-  inputs — `0` produced `id NOT IN (SELECT ... LIMIT 0)`, an empty keep-set
-  matching every row, so a single typo wiped the entire memory ledger, while a
-  negative value is read by SQLite as "no limit" and silently deleted nothing
-  while reporting a prune. `keep_latest < 1` is now rejected without deleting,
-  including in dry-run and when combined with other (ANDed) criteria.
+- **`pm_recall(include_auto_memory=true)` found no notes under a symlinked
+  project root (PMSERV-156)**: the locator encoded only the *resolved*
+  project path, but Claude Code names its `~/.claude/projects/<repo>` store
+  from the path as IT sees it — which may be the unresolved spelling
+  (`/var` vs `/private/var`, a symlinked HOME, a container mount). The two
+  spellings encode to different directory names, so the lookup matched
+  nothing and the overlay returned empty while reporting success. Both
+  spellings are now offered as candidates; a name that exists on neither is
+  simply never found on disk, so the extra candidate is harmless.
+
+- **Cross-project search returned nothing under `PM_LENS=1` (ADR-046)**: a
+  read-only store nulled its global index path outright, so
+  `pm_recall(cross_project=true)` and `pm_memory_search(cross_project=true)`
+  always returned `[]` for Claude Desktop/Cowork viewers even though both
+  tools are on the read-only allowlist. The guard was meant to stop writes,
+  not reads. The path is now retained and opened with
+  `mode=ro&immutable=1` — which creates no `-wal`/`-shm` sidecars and so
+  keeps the RO invariant intact (ADR-028) — while global writes are refused
+  by the store itself as defense-in-depth on top of the tool never being
+  registered under Lens.
+
+- **`pm_memory_cleanup(keep_latest=...)` floor asymmetry (PMSERV-164,
+  ADR-044)**: the memories path accepted values the summaries path had
+  rejected since PMSERV-162, and both out-of-range values were traps rather
+  than useful inputs — `0` produced `id NOT IN (SELECT ... LIMIT 0)`, an
+  empty keep-set matching every row, so a single typo wiped the entire memory
+  ledger, while a negative value is read by SQLite as "no limit" and silently
+  deleted nothing while reporting a prune. `keep_latest < 1` is now rejected
+  without deleting, including in dry-run and when combined with other (ANDed)
+  criteria.
 
 ## [0.12.1] - 2026-07-17
 

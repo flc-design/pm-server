@@ -46,6 +46,25 @@ jobs:
       - name: Install build tooling
         run: python -m pip install --upgrade build twine
 
+      # The v0.12.1 incident in reverse: there, the wrapper was STALE relative
+      # to the tag and PyPI rejected it loudly. `skip-existing: true` below now
+      # swallows that rejection, so an unbumped wrapper would republish nothing
+      # and still go green. Assert the pairing instead. Skipped on
+      # workflow_dispatch, where ref_name is a branch, not a version.
+      - name: Tag name must match the wrapper's version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          expected="${TAG#v}"; expected="${expected%%-*}"
+          actual="$(python -c 'import tomllib;print(tomllib.load(open("packaging/pm-server-wrapper/pyproject.toml","rb"))["project"]["version"])')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::tag $TAG expects wrapper version $expected but the tagged tree has $actual"
+            exit 1
+          fi
+          echo "tag $TAG matches wrapper $actual"
+
       - name: Build wrapper sdist + wheel
         run: python -m build packaging/pm-server-wrapper --outdir wrapper-dist
 

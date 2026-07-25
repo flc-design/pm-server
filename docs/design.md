@@ -432,7 +432,7 @@ worktree ごとに独立するため、**1 ライン = 1 worktree** にすれば
     source_file（basename）と同名別義にしない。
   - ingest 時の本文は非切り詰め（overlay の 500 字抜粋を索引すると、以降の記述が
     恒久的に検索不能になる）。
-  - 追加列 `source` / `source_file` / `content_hash` は ADD COLUMN で後方互換移行
+  - 追加列 `source` / `source_path` / `content_hash` は ADD COLUMN で後方互換移行
     （既存行は `source='pm'`）。FTS 定義は content/tags/project しか参照しないため影響なし。
     読み経路は未移行 DB でも例外を出さない（移行するのは ingest 側）。
   - ingest は書き込みなので PM_LENS=1 では登録しない（RO 不変条件）。Lens は取り込み済み
