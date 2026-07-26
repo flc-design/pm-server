@@ -49,12 +49,25 @@ def _steps(job: dict) -> list[dict]:
 
 
 def _index_of_step_containing(job: dict, needle: str) -> int:
-    """Index of the first step whose `run` or `uses` mentions `needle`, else -1."""
+    """Index of the first UNCONDITIONAL step whose `run`/`uses` mentions `needle`.
+
+    Steps carrying an ``if:`` are skipped deliberately. A gate behind
+    ``if: false`` — or behind any condition — is not a gate, and matching on
+    ``run`` alone would let a disabled guardrail satisfy every ordering
+    assertion here. The gates these tests protect must always run.
+    """
     for i, step in enumerate(_steps(job)):
+        if "if" in step:
+            continue
         blob = f"{step.get('run', '')}\n{step.get('uses', '')}"
         if needle in blob:
             return i
     return -1
+
+
+def _step_containing(job: dict, needle: str) -> dict | None:
+    index = _index_of_step_containing(job, needle)
+    return _steps(job)[index] if index != -1 else None
 
 
 def _environment_name(job: dict) -> str | None:
@@ -153,10 +166,30 @@ def test_wrapper_version_is_passed_from_build_not_derived_from_the_ref():
     deriving it from the ref would silently skip the gate on exactly the manual
     path a half-release recovery uses.
     """
-    build = _load(WRAPPER_YML)["jobs"]["build"]
+    wf = _load(WRAPPER_YML)
+    build = wf["jobs"]["build"]
     assert "version" in (build.get("outputs") or {}), (
         "publish-wrapper.yml's build job must export the wrapper version as an "
         "output so the publish gate does not depend on the ref shape"
+    )
+
+    # Exporting the output is worthless if the gate does not consume it. This
+    # is the half that actually prevents the regression the docstring names.
+    gate = _step_containing(wf["jobs"]["publish"], "pypi.org/pypi/pmlens/")
+    assert gate is not None, "expected the pmlens presence gate in the publish job"
+    version_source = (gate.get("env") or {}).get("VERSION", "")
+    assert "needs.build.outputs.version" in version_source, (
+        f"the gate derives its version from {version_source!r}; it must read "
+        "needs.build.outputs.version. github.ref_name is a BRANCH on a "
+        "workflow_dispatch run, which would silently skip the gate on exactly "
+        "the manual path a half-release recovery uses."
+    )
+    assert "github.ref_name" not in version_source
+
+    # The gate must also refuse to poll a blank version rather than requesting
+    # https://pypi.org/pypi/pmlens//json and treating the 404 as "not published".
+    assert 'if [ -z "${VERSION:-}" ]' in gate["run"], (
+        "the gate must fail closed when the build output is empty"
     )
 
 

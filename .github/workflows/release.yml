@@ -185,22 +185,32 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"; version="${version%%-*}"
+          if [ -z "$version" ]; then
+            echo "::error::could not derive a version from tag '$TAG'"
+            exit 1
+          fi
           url="https://pypi.org/pypi/pm-server/${version}/json"
-          # 10 attempts, backoff 15s..150s => ~13.75 min. PyPI index propagation
-          # is normally well under a minute; the budget is sized for a human
-          # approving the second run a few minutes late, not for the CDN.
-          for attempt in $(seq 1 10); do
+          # 10 polls over ~11 min of backoff (15s, 30s … 135s between them; no
+          # sleep after the last, which would be 2.5 min of not looking). Each
+          # poll is bounded by --retry-max-time so a hung endpoint cannot stretch
+          # the step: --max-time caps ONE attempt, not the retried transfer.
+          # PyPI propagation is normally well under a minute; the budget exists
+          # for a human approving the second run late, not for the CDN.
+          attempts=10
+          for attempt in $(seq 1 "$attempts"); do
+            # curl prints 000 to stdout on a transport failure AND exits non-zero,
+            # so the fallback must ASSIGN rather than append another 000.
             code="$(curl -sS -o /dev/null -w '%{http_code}' \
-                      --max-time 20 --retry 2 --retry-connrefused \
-                      -H 'Accept: application/json' "$url" || echo 000)"
+                      --max-time 20 --retry 2 --retry-max-time 40 --retry-connrefused \
+                      -H 'Accept: application/json' "$url")" || code=000
             if [ "$code" = "200" ]; then
-              echo "pm-server ${version} is on PyPI (attempt ${attempt})"
+              echo "pm-server ${version} is on PyPI (poll ${attempt})"
               exit 0
             fi
-            echo "attempt ${attempt}: HTTP ${code} for ${url}"
-            sleep $((attempt * 15))
+            echo "poll ${attempt}/${attempts}: HTTP ${code} for ${url}"
+            [ "$attempt" -lt "$attempts" ] && sleep $((attempt * 15))
           done
-          echo "::error::pm-server ${version} is not on PyPI after ~14 minutes. The wrapper run ('Release wrapper (pm-server) to PyPI') is probably still awaiting its own environment approval — approve it, then re-run this job. See docs/RELEASING.md."
+          echo "::error::pm-server ${version} is not on PyPI after 10 polls (~11 minutes). The wrapper run ('Release wrapper (pm-server) to PyPI') is probably still awaiting its own environment approval — approve it, then re-run this job. See docs/RELEASING.md."
           exit 1
 
       - name: Download .mcpb bundle

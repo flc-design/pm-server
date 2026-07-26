@@ -363,6 +363,152 @@ class TestInstallCursor:
         after = json.loads(fake_cursor_config.read_text(encoding="utf-8"))
         assert after["mcpServers"]["pmlens"] == {"myCustomKey": 42}
 
+    def test_skip_message_does_not_leak_the_home_directory(self, tmp_path, monkeypatch):
+        missing = tmp_path / "somewhere" / "private" / "mcp.json"
+        monkeypatch.setattr("pmlens.installer._cursor_config_path", lambda: missing)
+        monkeypatch.setattr("pmlens.installer._cursor_config_dir", lambda: missing.parent)
+        message = installer.install_cursor().message
+        assert "~/.cursor/mcp.json" in message
+        assert str(tmp_path) not in message, "messages must use the ~-relative config_label"
+
+
+class TestCursorEnvAndShapeHandling:
+    """The cases the first draft got wrong, each caught by adversarial review."""
+
+    def test_user_env_keys_survive_a_lens_mode_install(
+        self, fake_cursor_config, resolved_binary, monkeypatch
+    ):
+        """Replacing the env dict wholesale silently deleted user keys.
+
+        The TOML path edits the env table field by field precisely so unrelated
+        keys survive; the JSON path claimed to mirror it and did not.
+        """
+        monkeypatch.setenv("PM_LENS", "1")
+        fake_cursor_config.write_text(
+            json.dumps({"mcpServers": {"pmlens": {"env": {"MY_TOKEN": "keep-me"}}}}),
+            encoding="utf-8",
+        )
+
+        installer.install_cursor()
+
+        env = json.loads(fake_cursor_config.read_text(encoding="utf-8"))["mcpServers"]["pmlens"][
+            "env"
+        ]
+        assert env["MY_TOKEN"] == "keep-me"
+        assert env["PM_LENS"] == "1"
+
+    def test_install_is_idempotent_even_with_user_env_keys(
+        self, fake_cursor_config, resolved_binary, monkeypatch
+    ):
+        """A user env key must not make install permanently non-idempotent.
+
+        The comparison used to pit the user's FULL env against pmlens's managed
+        env alone, so any extra key made the equality fail forever: every run
+        reported "installed", rewrote a byte-identical file, and took a fresh
+        timestamped backup. Comparing against what we WOULD write fixes it.
+        """
+        monkeypatch.setenv("PM_LENS", "1")
+        installer.install_cursor()
+        doc = json.loads(fake_cursor_config.read_text(encoding="utf-8"))
+        doc["mcpServers"]["pmlens"]["env"]["MY_TOKEN"] = "x"
+        fake_cursor_config.write_text(json.dumps(doc), encoding="utf-8")
+        before = fake_cursor_config.read_bytes()
+
+        first = installer.install_cursor()
+        second = installer.install_cursor()
+
+        # The entry already IS what we would write, extra key included.
+        assert (first.status, second.status) == ("already_registered", "already_registered")
+        assert fake_cursor_config.read_bytes() == before
+        assert not list(fake_cursor_config.parent.glob("*.bak.*")), (
+            "a no-op reinstall must not take a backup"
+        )
+
+    def test_entry_missing_the_required_type_field_is_repaired(
+        self, fake_cursor_config, resolved_binary
+    ):
+        """`type` is written but was absent from the idempotency comparison, so
+        an entry lacking the field Cursor requires short-circuited forever."""
+        fake_cursor_config.write_text(
+            json.dumps(
+                {"mcpServers": {"pmlens": {"command": str(resolved_binary), "args": ["serve"]}}}
+            ),
+            encoding="utf-8",
+        )
+
+        result = installer.install_cursor()
+
+        assert result.status == "installed"
+        entry = json.loads(fake_cursor_config.read_text(encoding="utf-8"))["mcpServers"]["pmlens"]
+        assert entry["type"] == "stdio"
+
+    def test_uninstall_leaves_no_command_less_entry(
+        self, fake_cursor_config, resolved_binary, monkeypatch
+    ):
+        """Stripping only the top-level keys left `{"pmlens": {"env": {...}}}` —
+        an MCP server definition with no command — while the message claimed
+        "user-added keys preserved"."""
+        monkeypatch.setenv("PM_LENS", "1")
+        installer.install_cursor()
+
+        result = installer.uninstall_cursor()
+
+        doc = json.loads(fake_cursor_config.read_text(encoding="utf-8"))
+        assert "pmlens" not in doc.get("mcpServers", {})
+        assert "unregistered" in result.message
+        assert "preserved" not in result.message
+
+    @pytest.mark.parametrize("bad", ["null", "[1, 2, 3]", '"a string"'])
+    def test_non_object_mcp_servers_fails_without_side_effects(
+        self, bad, fake_cursor_config, resolved_binary
+    ):
+        """`doc.get(key) or {}` masked a null/array container, and `setdefault`
+        will not replace one, so the assignment raised TypeError — AFTER the
+        backup and mkdir had already run."""
+        original = f'{{"mcpServers": {bad}}}'
+        fake_cursor_config.write_text(original, encoding="utf-8")
+
+        result = installer.install_cursor()
+
+        assert result.status == "failed"
+        assert "non-object" in result.message
+        assert fake_cursor_config.read_text(encoding="utf-8") == original
+        assert not list(fake_cursor_config.parent.glob("*.bak.*")), (
+            "a refusal must not leave a backup behind"
+        )
+
+    def test_non_object_pmlens_entry_fails_cleanly(self, fake_cursor_config, resolved_binary):
+        original = '{"mcpServers": {"pmlens": "not-an-object"}}'
+        fake_cursor_config.write_text(original, encoding="utf-8")
+        result = installer.install_cursor()
+        assert result.status == "failed"
+        assert fake_cursor_config.read_text(encoding="utf-8") == original
+
+
+class TestTomlHostManagedKeys:
+    def test_uninstall_does_not_delete_a_user_authored_type_key(
+        self, fake_grok_config, resolved_binary
+    ):
+        """`type` is written only on JSON hosts. Sharing one managed-key tuple
+        made TOML uninstall delete a key pmlens never created, and flipped the
+        residual computation so the message claimed a clean unregister."""
+        fake_grok_config.write_text(
+            textwrap.dedent("""
+                [mcp_servers.pmlens]
+                type = "user-authored"
+                command = "/usr/bin/pmlens"
+                args = ["serve"]
+            """).lstrip(),
+            encoding="utf-8",
+        )
+
+        result = installer.uninstall_grok()
+
+        doc = tomlkit.parse(fake_grok_config.read_text(encoding="utf-8"))
+        assert str(doc["mcp_servers"]["pmlens"]["type"]) == "user-authored"
+        assert "command" not in doc["mcp_servers"]["pmlens"]
+        assert "preserved" in result.message
+
 
 # ─── Cross-host isolation ─────────────────────────────────────────────────
 
@@ -375,14 +521,22 @@ class TestCrossHostIsolation:
     """
 
     @pytest.fixture
-    def all_host_configs(self, tmp_path, monkeypatch):
+    def all_host_configs(self, tmp_path, monkeypatch, isolated_home):
         codex = tmp_path / ".codex" / "config.toml"
         grok = tmp_path / ".grok" / "config.toml"
         cursor = tmp_path / ".cursor" / "mcp.json"
+        # Claude Code registers through its own CLI, so it has no pmlens-edited
+        # config path — but it DOES own files under $HOME, and "every other
+        # host's config is untouched" has to mean those too, not just the three
+        # pmlens writes itself.
+        claude_settings = isolated_home / ".claude" / "settings.json"
+        claude_json = isolated_home / ".claude.json"
         for path, body in (
             (codex, '[cli]\nmodel = "gpt-5"\n'),
             (grok, '[cli]\ninstaller = "internal"\n'),
             (cursor, json.dumps({"mcpServers": {"other": {"command": "x"}}})),
+            (claude_settings, json.dumps({"hooks": {}})),
+            (claude_json, json.dumps({"mcpServers": {}})),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body, encoding="utf-8")
@@ -390,7 +544,13 @@ class TestCrossHostIsolation:
         monkeypatch.setattr("pmlens.installer._grok_config_path", lambda: grok)
         monkeypatch.setattr("pmlens.installer._cursor_config_path", lambda: cursor)
         monkeypatch.setattr("pmlens.installer._cursor_config_dir", lambda: cursor.parent)
-        return {"codex": codex, "grok": grok, "cursor": cursor}
+        return {
+            "codex": codex,
+            "grok": grok,
+            "cursor": cursor,
+            "claude-settings": claude_settings,
+            "claude-json": claude_json,
+        }
 
     @pytest.mark.parametrize("target", ["codex", "grok", "cursor"])
     def test_installing_one_host_leaves_the_others_byte_identical(
@@ -408,6 +568,35 @@ class TestCrossHostIsolation:
                 assert path.read_bytes() == before[name], (
                     f"installing {target} modified {name}'s config"
                 )
+
+    def test_installing_claude_code_leaves_every_file_registered_host_alone(
+        self, all_host_configs, resolved_binary, monkeypatch
+    ):
+        """The fourth host, which the parametrized case cannot cover.
+
+        Claude Code mutates through `claude mcp add`, so there is no config file
+        to diff on its side — but the claim "every other host's config stays
+        byte-identical" is only true if this direction holds too.
+        """
+        import subprocess
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        monkeypatch.setattr("pmlens.installer.shutil.which", lambda name: "/usr/bin/claude")
+        monkeypatch.setattr("pmlens.installer.subprocess.run", fake_run)
+
+        before = {name: path.read_bytes() for name, path in all_host_configs.items()}
+        installer.install(target="claude-code")
+
+        assert calls, "expected the Claude Code path to shell out"
+        for name, path in all_host_configs.items():
+            assert path.read_bytes() == before[name], (
+                f"installing claude-code modified {name}'s config"
+            )
 
     def test_no_host_writes_a_backup_into_another_hosts_directory(
         self, all_host_configs, resolved_binary

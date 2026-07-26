@@ -786,18 +786,23 @@ def inject_pm_rules(
             * ``"auto"`` (default) — detect installed hosts via
               ``detect_hosts`` (filesystem + marker + CLAUDECODE).
             * ``"all"`` — process every known host unconditionally.
-            * ``"claude-code"`` / ``"codex"`` — single-host targeting.
+            * a single host id from :data:`pmlens.hosts.HOSTS` —
+              ``"claude-code"`` writes ``CLAUDE.md``; ``"codex"``,
+              ``"cursor"`` and ``"grok"`` each write ``AGENTS.md``, which
+              all three read.
 
         dry_run: When True, no files are written or backed up; results
             still describe what *would* happen and per-result
             ``is_dry_run`` is True.
 
     Returns:
-        ``InjectSummary`` aggregating per-host results. Per-host
-        failures are isolated so a write failure in one rule file does
-        NOT abort the sibling host (best-effort; ADR-008 + cross-check
-        D1). The aggregate ``overall_status`` follows the priority
-        order ``failed > skipped > updated > created``.
+        ``InjectSummary`` with one result per rule FILE, not per host —
+        hosts sharing a file are deduplicated and named in
+        ``InjectResult.hosts`` (PMSERV-165). Failures are isolated so a
+        write failure in one rule file does NOT abort the others
+        (best-effort; ADR-008 + cross-check D1). The aggregate
+        ``overall_status`` follows the priority order
+        ``failed > skipped > updated > created``.
 
     Raises:
         ValueError: If ``target`` is not in ``TARGET_CHOICES``.

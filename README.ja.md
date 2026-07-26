@@ -132,10 +132,28 @@ MCP サーバーは起動時のみ接続するため、復旧後は **Claude Cod
 
 ## マルチホスト対応 (Claude Code / Codex / Cursor / Grok Build)
 
-PM Lens v0.5.0 は **Claude Code** (`~/.claude/`) と **Codex CLI**
-(`~/.codex/config.toml`) の 2 つの MCP **ホスト** に登録ターゲットとして対応します。
-両ホストは MCP 設定ストアが完全に分離されているため、必要なら 1 度のインストールで
-両方に届かせる必要があります。
+PM Lens は 4 つの MCP **ホスト** に登録ターゲットとして対応します。各ホストは
+MCP 設定ストアが完全に分離されているため、1 度のインストールで必要なホスト全てに
+届かせる必要があります。
+
+| ホスト        | MCP 登録先                | 形式                         | ルールファイル |
+| ------------- | ------------------------- | ---------------------------- | -------------- |
+| Claude Code   | `claude mcp add` (user)   | —                            | `CLAUDE.md`    |
+| Codex CLI     | `~/.codex/config.toml`    | TOML `[mcp_servers.pmlens]`  | `AGENTS.md`    |
+| Cursor        | `~/.cursor/mcp.json`      | JSON `"mcpServers"`          | `AGENTS.md`    |
+| Grok Build    | `~/.grok/config.toml`     | TOML `[mcp_servers.pmlens]`  | `AGENTS.md`    |
+
+4 つのうち 3 つが `AGENTS.md` を読むため、ルール注入はホスト単位ではなく
+**ファイル単位**で dedup される（`--target all` でも `AGENTS.md` の書き込みは 1 回）。
+
+> **Grok Build について。** Grok Build は Claude Code と Cursor の MCP 設定を
+> *互換ソース*として既に読むため、Claude Code 向けに install 済みなら多くの場合
+> そのまま動く。ネイティブ登録の価値は、その互換スキャンが opt-out 可能
+> (`[compat.claude] mcps = false`) かつ `~/.grok/config.toml` より低優先度である点。
+>
+> また Grok Build は同一ディレクトリの**認識可能なルールファイルを全て**読むため、
+> Claude Code と Codex の両方向けに管理されたプロジェクトでは PM ルールが 2 回
+> 入る。どちらのファイルも削れないので、`pm_status` が `warnings[]` で通知する。
 
 ### `--target` フラグ
 
@@ -148,10 +166,10 @@ PM Lens v0.5.0 は **Claude Code** (`~/.claude/`) と **Codex CLI**
 | --------------- | ----------------------------------------------------------------------------- |
 | `claude-code`   | (default) Claude Code のみ登録。`~/.codex/config.toml` には一切触らない。     |
 | `codex`         | Codex CLI のみ登録。`~/.claude/` には一切触らない。                           |
-| `cursor`        | Cursor のみ登録 (`~/.cursor/mcp.json`。`~/.cursor` があれば作成)。            |
+| `cursor`        | Cursor のみ登録。`~/.cursor` がある場合に限り `mcp.json` を作成。             |
 | `grok`          | Grok Build のみ登録 (`~/.grok/config.toml`)。                                |
-| `auto`          | filesystem 検知（`~/.codex/config.toml` の有無）— 検知された host のみ登録。  |
-| `all`           | 全ての既知 host を強制登録。`~/.codex/config.toml` 不在でも作成。             |
+| `auto`          | 各 host の設定パスの有無で検知 — 検知された host のみ登録。                   |
+| `all`           | 既知 host 全てを試行。未インストールの host は `skipped` を返す（**設定ファイルは作成しない**）。 |
 
 姉妹コマンド `pmlens update-rules` (v0.5.0 で本機能と同時に追加) は
 `--target auto` がデフォルトです。理由は v0.4.x の baseline がない新規コマンドで、
@@ -180,7 +198,7 @@ pmlens install
 # このマシンで検知された host にだけ PM Lens を追加
 pmlens install --target auto
 
-# 両 host に強制登録（必要なら ~/.codex/config.toml を作成）
+# 既知 host 全てを試行（未インストールの host は skipped）
 pmlens install --target all
 
 # プレビューのみ（ファイル書き込みなし）

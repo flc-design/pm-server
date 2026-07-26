@@ -898,10 +898,16 @@ def uninstall(target: str = "claude-code", *, dry_run: bool = False) -> InstallS
 
 | target          | 検知ロジック                                    | 効果                                                    |
 | --------------- | ---------------------------------------------- | ------------------------------------------------------ |
-| `claude-code`   | 単一 host (CLI default for install/uninstall)   | Codex 側を一切 open しない                              |
-| `codex`         | 単一 host                                       | Claude Code 側を一切 open しない                        |
-| `auto`          | filesystem (`~/.codex/config.toml` 存在) で判定 | 検知された host のみ register                           |
-| `all`           | 強制全 host                                     | Codex config 不在でも作成 (ホスト追加時に明示的に opt-in) |
+| `claude-code`   | 単一 host (CLI default for install/uninstall)   | 他 host の設定を一切 open しない                        |
+| `codex`         | 単一 host                                       | 他 host の設定を一切 open しない                        |
+| `cursor`        | 単一 host                                       | `~/.cursor` がある場合に限り `mcp.json` を作成          |
+| `grok`          | 単一 host                                       | 他 host の設定を一切 open しない                        |
+| `auto`          | 各 host の install marker で判定 (`~/.codex/config.toml` / `~/.cursor` / `~/.grok/config.toml`) | 検知された host のみ register |
+| `all`           | 既知 host 全てを試行                            | **未インストール host の config は作成せず `skipped`**   |
+
+> PMSERV-165 以前この表は「`all` は Codex config 不在でも作成」と書いていたが、
+> 実装は一度もそうではなかった（`_install_toml_host` は config 不在なら
+> `status="skipped"` を返す）。ホスト一覧は `pmlens.hosts.HOSTS` が SSoT。
 
 関連コマンド `pmlens update-rules` (ADR-008、§5.3 参照) は **デフォルト `target=auto`** であり、
 新規 API として最初から multi-host 検知を採用している。この非対称性は API design の

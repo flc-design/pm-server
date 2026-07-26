@@ -65,10 +65,21 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-# A three-component version anywhere in a line. The right-hand boundary matters:
-# without it `pm-server@0.13.0rc1` extracts `0.13.0`, compares equal, and passes
-# while documenting a pin that does not exist on PyPI.
-_SEMVER = re.compile(r"\d+\.\d+\.\d+(?![\w.])")
+# A version-shaped string anywhere in a line. Both boundaries are load-bearing,
+# and both were wrong in the first draft:
+#
+# * The suffix group means `0.13.0rc1` extracts as `0.13.0rc1`, not as `0.13.0`.
+#   A right-boundary-only pattern (`(?![\w.])`) matched NOTHING in `0.13.0rc1`
+#   or `0.13.0.post1`, so a stale pin written in PEP 440 form was invisible at
+#   every release, not merely deferred by one.
+# * `(?<![\d.])` stops the engine restarting mid-number: without it `0.11.25.3`
+#   yielded `11.25.3`, a value that appears nowhere in the file, reported as an
+#   offender. It rejects a preceding DIGIT OR DOT only — a preceding letter must
+#   still match, or `v0.13.0` (the form used throughout the HTML docs) would be
+#   skipped.
+#
+# `{2,}` rather than `{2}` so a four-component version is captured whole.
+_SEMVER = re.compile(r"(?<![\d.])\d+(?:\.\d+){2,}(?:[.\w+-]*[\w+])?")
 
 
 def pyproject_version() -> str:
@@ -159,19 +170,19 @@ TEXT_PINS: tuple[tuple[str, str, int, str], ...] = (
     ),
     (
         "docs/cheatsheet.md",
-        r"^> Version (\d+\.\d+\.\d+)(?![\w.]) \|",
+        r"^>\s+Version\s+(\d+\.\d+\.\d+)(?![\w.])\s+\|",
         1,
         "cheatsheet header stamp",
     ),
     (
         "docs/cheatsheet.ja.md",
-        r"^> Version (\d+\.\d+\.\d+)(?![\w.]) \|",
+        r"^>\s+Version\s+(\d+\.\d+\.\d+)(?![\w.])\s+\|",
         1,
         "cheatsheet header stamp (ja)",
     ),
     (
         "docs/README.md",
-        r"architecture\.html は v(\d+\.\d+\.\d+)(?![\w.])",
+        r"architecture\.html\s+は\s+v(\d+\.\d+\.\d+)(?![\w.])",
         1,
         "the LIVE half of a mixed line — the `user-guide / workflow-guide は "
         "v0.12.0` clause on the same line is deliberately frozen and must not "
@@ -181,7 +192,7 @@ TEXT_PINS: tuple[tuple[str, str, int, str], ...] = (
     # references, so a bare `v(\d+\.\d+\.\d+)` over-matches. Anchor each stamp.
     (
         "docs/architecture.html",
-        r"バージョン (\d+\.\d+\.\d+)(?![\w.])",
+        r"バージョン\s+(\d+\.\d+\.\d+)(?![\w.])",
         1,
         "header stamp (:92). The `(2026-07-25 時点)` date on the same line is a "
         "human contract, not a pin — never rewrite it from a test",
@@ -194,7 +205,7 @@ TEXT_PINS: tuple[tuple[str, str, int, str], ...] = (
     ),
     (
         "docs/architecture.html",
-        r"PM Lens v(\d+\.\d+\.\d+)(?![\w.])",
+        r"PM\s+Lens\s+v(\d+\.\d+\.\d+)(?![\w.])",
         1,
         "footer stamp (:756). `Generated 2026-06-15` on the same line is frozen "
         "by design; only the version moves",
@@ -227,39 +238,57 @@ SCOPE_FILES: tuple[str, ...] = (
 UV_LOCK = "uv.lock"
 
 # Occurrences inside a scoped file that are legitimately NOT the pmlens version.
-# Keyed by path; each entry is (line regex, reason). A match is suppressed only
-# when its LINE matches — anchoring on context rather than on the bare value, so
-# that e.g. bumping a third-party floor does not silently widen the suppression.
-IGNORED: dict[str, tuple[tuple[str, str], ...]] = {
+# Keyed by path; each entry is ``(line regex, value | None, reason)``.
+#
+# The line regex anchors on CONTEXT rather than on the bare value, so bumping a
+# third-party floor cannot silently widen a suppression. The value narrows it
+# further: when given, only that exact string is excused on a matching line —
+# every other version-shaped string on the same line is still checked. That
+# matters because ``docs/README.md:17`` carries the LIVE pin and a deliberately
+# frozen one on one line; a line-wide suppression would hide a stale value added
+# there forever, at this release and every future one.
+#
+# ``None`` means "every match on this line", used only where the whole line is
+# third-party by construction (PEP 508 requirement strings).
+IGNORED: dict[str, tuple[tuple[str, str | None, str], ...]] = {
     "pyproject.toml": (
         (
-            r'^\s*"[\w.\-\[\]]+\s*[><=!~]',
-            "third-party dependency floors (fastmcp, pyyaml, jinja2, filelock…)",
+            # Not anchored at line start: `requires = ["setuptools>=68", ...]`
+            # and the dev extra are inline arrays, and anchoring turned the
+            # guard red on a release-correct tree the moment either grew a floor.
+            r'"[\w.\-\[\]]+\s*[><=!~]',
+            None,
+            "third-party dependency floors (fastmcp, pyyaml, jinja2, filelock, "
+            "build-system requires, dev extras…)",
         ),
     ),
-    "plugin/README.md": ((r"Verified on Claude Code", "the HOST's version, not ours"),),
+    "plugin/README.md": ((r"Verified on Claude Code", "2.1.161", "the HOST's version, not ours"),),
     "packaging/pm-server-wrapper/pyproject.toml": (
         (
             r"pm-server==0\.10\.0",
+            "0.10.0",
             "frozen: the last release that shipped real pm-server code, before "
             "the rename made this a metapackage (ADR-031/032)",
         ),
     ),
     "docs/cheatsheet.md": (
-        (r"deprecated since v0\.6\.0", "frozen: when the legacy alias was deprecated"),
+        (r"deprecated since v0\.6\.0", "0.6.0", "frozen: when the legacy alias was deprecated"),
     ),
     "docs/cheatsheet.ja.md": (
-        (r"v0\.6\.0 以降 deprecated", "frozen: when the legacy alias was deprecated"),
+        (r"v0\.6\.0 以降 deprecated", "0.6.0", "frozen: when the legacy alias was deprecated"),
     ),
     "docs/architecture.html": (
-        (r"outbox\.py</code> は v0\.8\.0", "frozen: when outbox.py was introduced"),
-        (r"PMSERV-105 \(v0\.8\.0 release\)", "frozen: historical release credit"),
+        (r"outbox\.py</code> は v0\.8\.0", "0.8.0", "frozen: when outbox.py was introduced"),
+        (r"PMSERV-105 \(v0\.8\.0 release\)", "0.8.0", "frozen: historical release credit"),
     ),
     "docs/README.md": (
         (
             r"user-guide / workflow-guide は v0\.12\.0 時点",
+            "0.12.0",
             "frozen on purpose: only architecture.html was regenerated at "
-            "v0.13.0, so these two guides genuinely describe 0.12.0",
+            "v0.13.0, so these two guides genuinely describe 0.12.0. Scoped to "
+            "this VALUE because the same line carries the live architecture.html "
+            "pin — a line-wide excuse would hide a stale value added here.",
         ),
     ),
 }
@@ -371,15 +400,19 @@ def test_no_unregistered_version_pins_in_release_surfaces():
 
     for path in SCOPE_FILES:
         suppressions = tuple(
-            (re.compile(pattern), reason) for pattern, reason in IGNORED.get(path, ())
+            (re.compile(pattern), value) for pattern, value, _reason in IGNORED.get(path, ())
         )
         for lineno, line in enumerate(_read(path).splitlines(), 1):
             for match in _SEMVER.finditer(line):
-                if match.group(0) == ver:
+                found = match.group(0)
+                if found == ver:
                     continue
-                if any(rx.search(line) for rx, _ in suppressions):
+                if any(
+                    rx.search(line) and (value is None or value == found)
+                    for rx, value in suppressions
+                ):
                     continue
-                offenders.append(f"{path}:{lineno}: {match.group(0)!r} | {line.strip()[:100]}")
+                offenders.append(f"{path}:{lineno}: {found!r} | {line.strip()[:100]}")
 
     assert not offenders, (
         f"version-shaped strings in release-surface files that are neither the "
@@ -401,7 +434,14 @@ def test_scope_and_registry_agree():
         | {p for p, _, _ in TOML_PINS}
         | {p for p, _, _, _ in TEXT_PINS}
     )
-    # pyproject.toml is the SSoT itself, so it has no pin entry of its own.
+    # pyproject.toml is the SSoT itself, so it has no pin entry of its own —
+    # but it must still be SCANNED. Subtracting it without asserting its
+    # presence let it be dropped from SCOPE_FILES with both assertions green,
+    # silently ending reverse coverage of the one file that defines the version.
+    assert "pyproject.toml" in SCOPE_FILES, (
+        "the SSoT file must stay in reverse-scan scope; a stray version string "
+        "in pyproject.toml is exactly what nobody would notice"
+    )
     scoped = set(SCOPE_FILES) - {"pyproject.toml"}
 
     assert registered - scoped == set(), (
@@ -411,6 +451,26 @@ def test_scope_and_registry_agree():
     assert scoped - registered == set(), (
         f"in reverse scope but with no forward extractor: {sorted(scoped - registered)} — "
         "add a JSON_PINS/TOML_PINS/TEXT_PINS entry so the pin has an owner"
+    )
+
+
+def test_release_runbook_lists_every_surface():
+    """``docs/RELEASING.md``'s pre-flight table must name every scoped file.
+
+    A human bumping versions follows the runbook, not this registry. A file
+    guarded here but missing from the table gets forgotten until CI catches it;
+    a file in the table but not here is guarded by nobody. Keeping the two in
+    sync by hand is exactly the drift this module exists to prevent, so assert
+    it instead.
+    """
+    runbook = _read("docs/RELEASING.md")
+    missing = [path for path in SCOPE_FILES + (UV_LOCK,) if path not in runbook]
+    # pyproject.toml is named in prose as the SSoT rather than as a row.
+    missing = [p for p in missing if p != "pyproject.toml"]
+    assert not missing, (
+        "docs/RELEASING.md's pre-flight checklist does not mention "
+        f"{missing} — a release surface the runbook never tells you to bump "
+        "(PMSERV-172)"
     )
 
 

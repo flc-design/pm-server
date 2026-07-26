@@ -68,9 +68,10 @@
   "2 of 2", and `docs/RELEASING.md` documents the procedure that was previously
   recorded nowhere.
 - **The test suite can no longer edit the developer's real editor configs**: it
-  now runs with `$HOME` pointed at a per-test sandbox, plus a detection guard
-  that fails any test which disturbs a real host config or leaves a pmlens
-  backup beside one. Found the hard way — an installer refactor resolved its
+  runs with `$HOME` pointed at a sandbox — set in `pytest_configure`, before
+  collection, and narrowed per test — plus detection guards at both session and
+  function scope that fail if a real host config is disturbed or a pmlens backup
+  appears beside one. Found the hard way — an installer refactor resolved its
   config path around the seam the fixtures patched and a plain `pytest` wrote
   into the real `~/.grok` and `~/.cursor`.
 

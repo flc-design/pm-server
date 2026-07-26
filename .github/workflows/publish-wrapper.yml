@@ -123,19 +123,25 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
+          if [ -z "${VERSION:-}" ]; then
+            echo "::error::the build job did not export a wrapper version; refusing to publish blind"
+            exit 1
+          fi
           url="https://pypi.org/pypi/pmlens/${VERSION}/json"
-          for attempt in $(seq 1 10); do
+          # Same schedule and the same two curl subtleties as release.yml.
+          attempts=10
+          for attempt in $(seq 1 "$attempts"); do
             code="$(curl -sS -o /dev/null -w '%{http_code}' \
-                      --max-time 20 --retry 2 --retry-connrefused \
-                      -H 'Accept: application/json' "$url" || echo 000)"
+                      --max-time 20 --retry 2 --retry-max-time 40 --retry-connrefused \
+                      -H 'Accept: application/json' "$url")" || code=000
             if [ "$code" = "200" ]; then
-              echo "pmlens ${VERSION} is on PyPI (attempt ${attempt})"
+              echo "pmlens ${VERSION} is on PyPI (poll ${attempt})"
               exit 0
             fi
-            echo "attempt ${attempt}: HTTP ${code} for ${url}"
-            sleep $((attempt * 15))
+            echo "poll ${attempt}/${attempts}: HTTP ${code} for ${url}"
+            [ "$attempt" -lt "$attempts" ] && sleep $((attempt * 15))
           done
-          echo "::error::pmlens ${VERSION} is not on PyPI after ~14 minutes. Approve 'Release to PyPI' (approval 1 of 2) FIRST, then re-run this job. Publishing this wrapper now would ship a metapackage whose pmlens>=${VERSION} floor cannot resolve. See docs/RELEASING.md."
+          echo "::error::pmlens ${VERSION} is not on PyPI after 10 polls (~11 minutes). Approve 'Release to PyPI' (approval 1 of 2) FIRST, then re-run this job. Publishing this wrapper now would ship a metapackage whose pmlens>=${VERSION} floor cannot resolve. See docs/RELEASING.md."
           exit 1
 
       - name: Download distributions

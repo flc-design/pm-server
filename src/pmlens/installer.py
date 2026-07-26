@@ -83,8 +83,15 @@ def _cursor_config_dir() -> Path:
 
 #: Keys inside a ``pmlens`` server entry that pmlens owns and may rewrite or
 #: delete. Anything else in that entry was put there by the user and survives
-#: both install and uninstall. ``type`` is Cursor-only but harmless elsewhere.
-_MANAGED_SERVER_KEYS: tuple[str, ...] = ("type", "command", "args", "startup_timeout_sec")
+#: both install and uninstall.
+#:
+#: Per registration format, NOT shared: pmlens writes ``type`` only on JSON
+#: hosts (Cursor documents it as required for stdio). Listing it for the TOML
+#: hosts would make uninstall delete a ``type`` key the user wrote themselves —
+#: a key pmlens never created — and would flip the residual-key computation, so
+#: the message would claim a clean unregister where sub-tables were preserved.
+_MANAGED_SERVER_KEYS_TOML: tuple[str, ...] = ("command", "args", "startup_timeout_sec")
+_MANAGED_SERVER_KEYS_JSON: tuple[str, ...] = ("type", "command", "args", "startup_timeout_sec")
 
 #: Env keys pmlens owns inside a server entry (see ``_lens_mode_active``).
 _MANAGED_ENV_KEYS: tuple[str, ...] = ("PM_LENS", "PM_DESKTOP_WRITE")
@@ -664,7 +671,7 @@ def _uninstall_toml_host(
         # Predict whether the section would be fully removed or only
         # top-level fields stripped (sub-tables preserved).
         section = doc[mcp_key]["pmlens"]
-        residual_keys = [k for k in section.keys() if k not in _MANAGED_SERVER_KEYS]
+        residual_keys = [k for k in section.keys() if k not in _MANAGED_SERVER_KEYS_TOML]
         if not residual_keys:
             message = (
                 f"would unregister PM Lens from {spec.display_name}. "
@@ -687,7 +694,7 @@ def _uninstall_toml_host(
     backup_path = _timestamped_backup(config_path)
 
     section = doc[mcp_key]["pmlens"]
-    for key in _MANAGED_SERVER_KEYS:
+    for key in _MANAGED_SERVER_KEYS_TOML:
         if key in section:
             del section[key]
 
@@ -746,6 +753,34 @@ def _read_json_config(path: Path) -> dict:
     return doc
 
 
+def _json_shape_error(doc: dict, mcp_key: str) -> str | None:
+    """Describe why ``doc`` cannot safely hold a server entry, or None if it can.
+
+    ``doc.get(key) or {}`` reads a ``null`` or list value as "absent", and
+    ``setdefault`` will not replace an existing non-dict, so without this check
+    the assignment ``doc[key]["pmlens"] = ...`` raises TypeError — after the
+    backup and mkdir side effects have already run.
+    """
+    # `null` counts as non-object: `doc.get(key) or {}` reads it as absent, but
+    # `setdefault` will not replace it, so the assignment would still blow up.
+    # Refusing beats normalising — we did not write that value and do not know
+    # what the user meant by it.
+    if mcp_key in doc and not isinstance(doc[mcp_key], dict):
+        return f'has a non-object "{mcp_key}" ({type(doc[mcp_key]).__name__})'
+    servers = doc.get(mcp_key) or {}
+    entry = servers.get("pmlens") if isinstance(servers, dict) else None
+    if entry is not None and not isinstance(entry, dict):
+        return f'has a non-object "{mcp_key}.pmlens" ({type(entry).__name__})'
+    return None
+
+
+def _json_residual_keys(entry: dict) -> list[str]:
+    """Keys in a JSON server entry that pmlens did NOT put there."""
+    residual = [k for k in entry if k not in _MANAGED_SERVER_KEYS_JSON and k != "env"]
+    residual += [k for k in (entry.get("env") or {}) if k not in _MANAGED_ENV_KEYS]
+    return residual
+
+
 def _write_json_config(path: Path, doc: dict) -> None:
     """Atomically write a host's JSON MCP config, with a trailing newline."""
     _atomic_write_text(path, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
@@ -773,7 +808,7 @@ def _install_json_host(
         return InstallResult(
             target=spec.host_id,
             status="skipped",
-            message=f"{marker} not found — {spec.display_name} not installed",
+            message=f"{spec.config_label} not found — {spec.display_name} not installed",
             is_dry_run=dry_run,
             lens_mode=lens_mode,
         )
@@ -793,13 +828,44 @@ def _install_json_host(
             lens_mode=lens_mode,
         )
 
+    # Validate the SHAPE before any side effect. `_read_json_config` only
+    # checks the top level, and `doc.get(key) or {}` masks a null/array
+    # `mcpServers` — which would then blow up with a TypeError at the
+    # assignment below, AFTER the backup and mkdir had already run.
+    shape_error = _json_shape_error(doc, spec.mcp_key)
+    if shape_error is not None:
+        return InstallResult(
+            target=spec.host_id,
+            status="failed",
+            message=(
+                f"{spec.config_label} {shape_error}; refusing to overwrite it. "
+                "Fix or move the file, then re-run."
+            ),
+            is_dry_run=dry_run,
+            lens_mode=lens_mode,
+        )
+
     env = _managed_env(lens_mode=lens_mode, desktop_write_mode=desktop_write_mode)
     servers = doc.get(spec.mcp_key) or {}
     existing = servers.get("pmlens") or {}
+    # PMSERV165-1: merge, never replace. The TOML path edits the env table
+    # field by field so unrelated user keys survive; doing otherwise here would
+    # silently delete them on every install.
+    desired_env = {
+        k: v for k, v in (existing.get("env") or {}).items() if k not in _MANAGED_ENV_KEYS
+    }
+    desired_env.update(env)
     if (
         existing.get("command") == str(pm_server_path)
         and existing.get("args") == ["serve"]
-        and (existing.get("env") or {}) == env
+        # `type` is part of what we write, so it must be part of what we
+        # compare — otherwise an entry missing the field Cursor requires
+        # short-circuits to already_registered and is never repaired.
+        and existing.get("type") == "stdio"
+        # Compare against what we WOULD write, not against the managed subset:
+        # comparing the user's full env to `env` never matches when they added
+        # a key, so every run rewrote a byte-identical file and took a backup.
+        and (existing.get("env") or {}) == desired_env
     ):
         return InstallResult(
             target=spec.host_id,
@@ -836,16 +902,10 @@ def _install_json_host(
     entry["type"] = "stdio"
     entry["command"] = str(pm_server_path)
     entry["args"] = ["serve"]
-    if env:
-        entry["env"] = env
+    if desired_env:
+        entry["env"] = desired_env
     else:
-        merged_env = {
-            k: v for k, v in (existing.get("env") or {}).items() if k not in _MANAGED_ENV_KEYS
-        }
-        if merged_env:
-            entry["env"] = merged_env
-        else:
-            entry.pop("env", None)
+        entry.pop("env", None)
 
     doc.setdefault(spec.mcp_key, {})
     doc[spec.mcp_key]["pmlens"] = entry
@@ -890,6 +950,18 @@ def _uninstall_json_host(
             is_dry_run=dry_run,
         )
 
+    shape_error = _json_shape_error(doc, spec.mcp_key)
+    if shape_error is not None:
+        return InstallResult(
+            target=spec.host_id,
+            status="failed",
+            message=(
+                f"{spec.config_label} {shape_error}; refusing to overwrite it. "
+                "Fix or move the file, then re-run."
+            ),
+            is_dry_run=dry_run,
+        )
+
     servers = doc.get(spec.mcp_key) or {}
     if "pmlens" not in servers:
         return InstallResult(
@@ -900,7 +972,7 @@ def _uninstall_json_host(
         )
 
     entry = servers["pmlens"]
-    residual_keys = [k for k in entry if k not in _MANAGED_SERVER_KEYS]
+    residual_keys = _json_residual_keys(entry)
 
     if dry_run:
         message = (
@@ -922,8 +994,16 @@ def _uninstall_json_host(
         )
 
     backup_path = _timestamped_backup(config_path)
-    for key in _MANAGED_SERVER_KEYS:
+    for key in _MANAGED_SERVER_KEYS_JSON:
         entry.pop(key, None)
+    # pmlens wrote these env keys, so pmlens removes them. Leaving them behind
+    # produced `{"pmlens": {"env": {"PM_LENS": "1"}}}` — an MCP server entry
+    # with no command — while the message claimed "user-added keys preserved".
+    leftover_env = {k: v for k, v in (entry.get("env") or {}).items() if k not in _MANAGED_ENV_KEYS}
+    if leftover_env:
+        entry["env"] = leftover_env
+    else:
+        entry.pop("env", None)
 
     if not entry:
         del servers["pmlens"]
@@ -1026,9 +1106,12 @@ def install(target: str = "claude-code", *, dry_run: bool = False) -> InstallSum
     """Register pm-server with one or more host MCP clients.
 
     Args:
-        target: ``"claude-code"`` (default), ``"codex"``, ``"auto"``, or
-            ``"all"`` (``"auto"`` and ``"all"`` are synonyms; both run
-            every known host and skip the ones that aren't installed).
+        target: ``"auto"``, ``"all"``, or a single host id from
+            :data:`pmlens.hosts.HOSTS` — currently ``"claude-code"``
+            (the default), ``"codex"``, ``"cursor"`` or ``"grok"``.
+            ``"auto"`` and ``"all"`` are synonyms here; both run every
+            known host and skip the ones that aren't installed. The
+            authoritative list is ``utils.TARGET_CHOICES``.
         dry_run: When ``True``, propagated to every host installer; no
             side effects (subprocess execution, backups, file writes)
             occur, but read-only detection still runs so each result's

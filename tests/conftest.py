@@ -2,6 +2,7 @@
 
 import datetime as _dt
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,8 +37,12 @@ from pmlens.models import (
 # Captured at import time, before any fixture can monkeypatch HOME.
 _REAL_HOME = Path.home()
 
-# Config files no other process rewrites while the suite runs, so their CONTENT
-# is a valid tripwire.
+# Config files whose CONTENT is watched. Nothing on a normal dev machine
+# rewrites these while a test run is in flight — but a Cursor window toggling an
+# MCP server, or a second agent running `pmlens install`, can. That would surface
+# as a failure blaming whichever test was executing. The trade is deliberate:
+# a rare confusing failure is much cheaper than a silent rewrite of a real
+# config, which is what this guard exists to make impossible.
 _PROTECTED_HOST_FILES: tuple[Path, ...] = (
     _REAL_HOME / ".codex" / "config.toml",
     _REAL_HOME / ".cursor" / "mcp.json",
@@ -72,17 +77,68 @@ def _backup_names(path: Path) -> list[str]:
 
 
 def _host_config_fingerprint() -> dict[str, object]:
-    """Snapshot of everything a stray pmlens write would disturb."""
+    """Snapshot of everything a stray pmlens write would disturb.
+
+    An unreadable file records the exception rather than ``None``, so
+    "permission denied both times" cannot masquerade as "unchanged" the way a
+    shared sentinel would — the same class of bug as ``pathlib.glob``
+    swallowing PermissionError and returning empty.
+    """
     snapshot: dict[str, object] = {}
     for path in _PROTECTED_HOST_FILES:
         try:
             snapshot[str(path)] = path.read_bytes()
-        except OSError:
-            snapshot[str(path)] = None
+        except FileNotFoundError:
+            snapshot[str(path)] = "<absent>"
+        except OSError as e:
+            snapshot[str(path)] = f"<unreadable: {e.__class__.__name__}: {e}>"
         snapshot[f"{path}::backups"] = _backup_names(path)
     for path in _BACKUP_ONLY_HOST_FILES:
         snapshot[f"{path}::backups"] = _backup_names(path)
     return snapshot
+
+
+def pytest_configure(config):
+    """Point ``$HOME`` at a session sandbox before ANYTHING else runs.
+
+    The per-test :func:`isolated_home` fixture cannot cover collection-time
+    code, module- or session-scoped fixtures, or ``pytest_*`` hooks — all of
+    which run before any function-scoped fixture. Anything resolving
+    ``Path.home()`` at that layer would reach the developer's real home, and
+    the per-test detection guard could not see it either, because its "before"
+    snapshot is taken afterwards. Setting HOME here closes that window; the
+    per-test fixture then narrows it further to one directory per test.
+
+    ``_REAL_HOME`` was captured at import time, above, so the detection guards
+    still watch the true home.
+    """
+    import tempfile
+
+    sandbox = Path(tempfile.mkdtemp(prefix="pmlens-session-home-"))
+    os.environ["HOME"] = str(sandbox)
+    os.environ["USERPROFILE"] = str(sandbox)
+    config._pmlens_session_home = sandbox
+    config._pmlens_session_fingerprint = _host_config_fingerprint()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Session-scoped half of the detection guard.
+
+    Catches a real-home mutation made outside any test function — by a
+    module-scoped fixture, a collection-time import, or a plugin hook — which
+    the function-scoped guard structurally cannot observe.
+    """
+    before = getattr(session.config, "_pmlens_session_fingerprint", None)
+    if before is None:  # pragma: no cover - only if pytest_configure was skipped
+        return
+    changed = [key for key, value in before.items() if _host_config_fingerprint()[key] != value]
+    if changed:
+        raise pytest.UsageError(
+            "the test SESSION modified the real host configuration in $HOME "
+            f"outside any test function: {changed}. Something at module or "
+            "collection scope resolved a real-home path — the per-test "
+            "isolated_home fixture cannot cover that layer."
+        )
 
 
 @pytest.fixture(autouse=True)
