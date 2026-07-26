@@ -580,6 +580,16 @@ def pm_status(project_path: str | None = None) -> dict:
         )
         next_actions = [*next_actions, awareness["message"] + detail]
 
+    # PMSERV-165: Grok Build loads EVERY recognised rule file in a directory,
+    # so a project carrying both CLAUDE.md and AGENTS.md hands it the PM rules
+    # twice. Read-only (two Path.exists + two reads) — safe on this read path.
+    from .rules import duplicate_rule_file_warning
+
+    status_warnings: list[dict] = []
+    duplicate = duplicate_rule_file_warning(root)
+    if duplicate is not None:
+        status_warnings.append(duplicate)
+
     return {
         "project": {
             "name": project.name,
@@ -599,6 +609,7 @@ def pm_status(project_path: str | None = None) -> dict:
         "rules": get_rules_status(root),
         "hooks": hooks_status,
         "next_pm_actions": next_actions,
+        "warnings": status_warnings,
         "diagnostics": diagnostics,
     }
 
@@ -3106,36 +3117,42 @@ def pm_update_rules(
         project_path: Project root. Auto-detected if omitted.
         target: One of ``"auto"`` (default; detect installed hosts via
             filesystem + marker + CLAUDECODE), ``"all"`` (force every
-            known host), ``"claude-code"`` (only CLAUDE.md), or
-            ``"codex"`` (only AGENTS.md).
+            known host), or a single host id — ``"claude-code"`` (only
+            CLAUDE.md), or ``"codex"`` / ``"cursor"`` / ``"grok"`` (only
+            AGENTS.md, which all three read).
         dry_run: If True, report what would happen without writing.
 
     Returns a dict with: ``overall_status``, ``detected_hosts``,
     ``detection_source`` (``"filesystem+marker+env"`` |
     ``"explicit"`` | ``"fallback"``), ``created``, ``updated``,
-    ``is_dry_run``, ``results`` (per-host detail), and ``warnings``
-    (surfaced when detection falls back to claude-code without any
-    positive signal — pass ``target="codex"`` explicitly to opt into
-    AGENTS.md when running outside a Codex-aware shell).
+    ``is_dry_run``, ``results`` (one entry per rule FILE — several hosts
+    share AGENTS.md, so ``results[].hosts`` lists every host that reads
+    it), and ``warnings``.
     """
-    from .rules import inject_pm_rules
+    from .hosts import HOSTS
+    from .rules import duplicate_rule_file_warning, inject_pm_rules
 
     root = resolve_project_path(project_path)
     summary = inject_pm_rules(root, target=target, dry_run=dry_run)
 
     warnings: list[dict] = []
     if summary.detection_source == "fallback":
+        others = ", ".join(h for h in HOSTS if h != "claude-code")
         warnings.append(
             {
                 "code": "host_detection_fallback",
                 "message": (
                     "No host could be detected from filesystem, markers, or env. "
-                    "Defaulted to claude-code only — pass target=codex explicitly "
-                    "if running under Codex CLI."
+                    f"Defaulted to claude-code only — pass target=<{others}> "
+                    "explicitly if running under one of those hosts."
                 ),
                 "remediation": "pm_update_rules(target='codex')",
             }
         )
+
+    duplicate = duplicate_rule_file_warning(root)
+    if duplicate is not None:
+        warnings.append(duplicate)
 
     return {
         "overall_status": summary.overall_status,
@@ -3148,6 +3165,9 @@ def pm_update_rules(
             {
                 "target_file": r.target_file,
                 "host": r.host,
+                # Every host that reads target_file. `host` stays the single
+                # owning host for backward compatibility (PMSERV-165).
+                "hosts": list(r.hosts) or [r.host],
                 "status": r.status,
                 "message": r.message,
                 "backup_path": str(r.backup_path) if r.backup_path else None,

@@ -447,7 +447,7 @@ class TestInstallOrchestrator:
         with patch("pmlens.installer.shutil.which", side_effect=which):
             summary = install(target="all")
         targets = [r.target for r in summary.results]
-        assert targets == ["claude-code", "codex"]
+        assert targets == ["claude-code", "codex", "cursor", "grok"]
 
     def test_unknown_target_error_lists_all_in_valid_choices(self):
         """ValueError message lists ``"all"`` alongside ``"auto"`` (PMSERV-039)."""
@@ -479,7 +479,13 @@ class TestInstallOrchestrator:
             summary = install(target="all", dry_run=True)
 
         assert all(r.is_dry_run is True for r in summary.results)
-        assert all("would " in r.message.lower() for r in summary.results)
+        # Hosts that are not installed on this machine legitimately report
+        # "skipped" with no "would" verb; every host that WOULD act must say so.
+        assert all("would " in r.message.lower() for r in summary.results if r.status != "skipped")
+        assert {r.target for r in summary.results if r.status != "skipped"} >= {
+            "claude-code",
+            "codex",
+        }
         # Codex config file must not have been mutated.
         assert fake_codex_config.read_text(encoding="utf-8") == "# stub\n"
 

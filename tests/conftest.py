@@ -21,6 +21,119 @@ from pmlens.models import (
     TaskStatus,
 )
 
+# ─── The real host configs must survive the test suite ────────────────────
+#
+# pmlens writes to files in $HOME: ~/.codex/config.toml, ~/.cursor/mcp.json,
+# ~/.grok/config.toml, ~/.claude/settings.json. Every writer test redirects
+# those paths at tmp_path — but a redirect that MISSES does not merely fail an
+# assertion, it edits the developer's real editor configuration. That happened
+# while PMSERV-165 was being written: an installer refactor resolved its config
+# path through the host registry instead of the module-level seam the fixture
+# patched, and a plain `pytest -q` registered pmlens into the real ~/.grok and
+# ~/.cursor. It was noticed only because the assertion downstream happened to
+# fail; a passing test would have been silent.
+#
+# Captured at import time, before any fixture can monkeypatch HOME.
+_REAL_HOME = Path.home()
+
+# Config files no other process rewrites while the suite runs, so their CONTENT
+# is a valid tripwire.
+_PROTECTED_HOST_FILES: tuple[Path, ...] = (
+    _REAL_HOME / ".codex" / "config.toml",
+    _REAL_HOME / ".cursor" / "mcp.json",
+    _REAL_HOME / ".grok" / "config.toml",
+)
+
+# Files owned by a Claude Code process that may be running RIGHT NOW — quite
+# possibly the one running this very suite. Their content churns for reasons
+# that have nothing to do with the tests, so comparing it blames whichever test
+# happened to be executing (observed: an unrelated FTS test failed because the
+# live session touched ~/.claude.json mid-run). Only pmlens's own signature is
+# watched here — see _backup_names.
+_BACKUP_ONLY_HOST_FILES: tuple[Path, ...] = (
+    _REAL_HOME / ".claude" / "settings.json",
+    _REAL_HOME / ".claude.json",
+)
+
+
+def _backup_names(path: Path) -> list[str]:
+    """Timestamped backups sitting next to ``path``.
+
+    pmlens always writes ``<name>.bak.<ts>`` before editing a host config, and
+    nothing else on the machine creates that pattern. So a new backup is an
+    unambiguous fingerprint of a pmlens writer that escaped its sandbox —
+    including the install-then-uninstall case, where the file content ends up
+    byte-identical and only the litter gives it away.
+    """
+    try:
+        return sorted(p.name for p in path.parent.glob(f"{path.name}.bak.*"))
+    except OSError:
+        return []
+
+
+def _host_config_fingerprint() -> dict[str, object]:
+    """Snapshot of everything a stray pmlens write would disturb."""
+    snapshot: dict[str, object] = {}
+    for path in _PROTECTED_HOST_FILES:
+        try:
+            snapshot[str(path)] = path.read_bytes()
+        except OSError:
+            snapshot[str(path)] = None
+        snapshot[f"{path}::backups"] = _backup_names(path)
+    for path in _BACKUP_ONLY_HOST_FILES:
+        snapshot[f"{path}::backups"] = _backup_names(path)
+    return snapshot
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """Point ``$HOME`` at a per-test sandbox — the PREVENTION half.
+
+    ``Path.home()`` resolves through ``$HOME`` on POSIX, so every host config
+    path pmlens derives (``~/.codex``, ``~/.cursor``, ``~/.grok``,
+    ``~/.claude``) lands under ``tmp_path`` by default. A test that forgets to
+    redirect a writer now writes into its own sandbox instead of the
+    developer's real configuration.
+
+    Tests that need a specific home still set ``HOME`` themselves; a later
+    ``monkeypatch.setenv`` simply wins. This is the same two-lever isolation
+    the plugin's manual test harness uses (``CLAUDE_CONFIG_DIR`` + ``env.HOME``),
+    applied to the suite itself, and it pairs with the detection guard below:
+    prevention for anything that goes through ``$HOME``, detection for anything
+    that does not.
+    """
+    # Deliberately not "fake_home": several suites already create a directory
+    # by that name under tmp_path for their own HOME fixtures.
+    sandbox = tmp_path / "_isolated_home"
+    sandbox.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(sandbox))
+    monkeypatch.setenv("USERPROFILE", str(sandbox))  # Windows equivalent
+    return sandbox
+
+
+@pytest.fixture(autouse=True)
+def real_host_configs_untouched():
+    """Fail loudly if a test mutates a REAL host config outside its sandbox.
+
+    Converts "your ~/.grok was silently rewritten" into a named test failure.
+    Deliberately autouse and unconditional: the tests that need this guard are
+    exactly the ones whose author did not realise they needed it. This is the
+    DETECTION half — it catches writers that bypass ``$HOME`` entirely (an
+    absolute path, a cached module-level constant) which :func:`isolated_home`
+    cannot prevent.
+    """
+    before = _host_config_fingerprint()
+    yield
+    after = _host_config_fingerprint()
+    changed = [key for key in before if before[key] != after[key]]
+    assert not changed, (
+        "this test modified the REAL host configuration in $HOME instead of a "
+        f"sandbox: {changed}. A writer resolved its config path outside the "
+        "monkeypatched seam — patch `pmlens.installer._codex_config_path` / "
+        "`_grok_config_path` / `_cursor_config_path` (or set HOME to tmp_path) "
+        "so the write lands in tmp_path."
+    )
+
 
 @pytest.fixture(autouse=True)
 def isolated_registry(tmp_path, monkeypatch):

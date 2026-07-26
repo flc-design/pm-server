@@ -305,16 +305,33 @@ class TestResolveProjectPathPicker:
 
 class TestKnownHosts:
     def test_order_is_significant(self):
-        """``claude-code`` must come first — orchestrator dispatch order."""
-        assert _KNOWN_HOSTS == ("claude-code", "codex")
+        """Order is dispatch order, and deduplication resolves ties by it.
+
+        ``claude-code`` first (it owns CLAUDE.md), ``codex`` second — cursor
+        and grok share codex's AGENTS.md, so codex must precede them or the
+        shared-file result would be attributed to the wrong host (PMSERV-165).
+        """
+        assert _KNOWN_HOSTS == ("claude-code", "codex", "cursor", "grok")
 
     def test_target_choices_is_auto_all_then_known_hosts(self):
-        assert TARGET_CHOICES == ("auto", "all", "claude-code", "codex")
+        assert TARGET_CHOICES == ("auto", "all", "claude-code", "codex", "cursor", "grok")
+
+    def test_cli_choices_match_the_api(self):
+        """The CLI must not offer a different host set than the Python API.
+
+        Nothing compared the two before PMSERV-165: ``__main__._TARGET_CHOICES``
+        was a separate hand-written list, in a different order, referenced by no
+        test — so a host added to one could be missing from the other and only
+        surface as a user-facing "invalid choice".
+        """
+        from pmlens.__main__ import _TARGET_CHOICES
+
+        assert list(_TARGET_CHOICES) == list(TARGET_CHOICES)
 
 
 class TestResolveTargets:
     def test_auto_expands_to_all_known_hosts(self):
-        assert _resolve_targets("auto") == ["claude-code", "codex"]
+        assert _resolve_targets("auto") == ["claude-code", "codex", "cursor", "grok"]
 
     def test_all_is_synonym_of_auto(self):
         assert _resolve_targets("all") == _resolve_targets("auto")

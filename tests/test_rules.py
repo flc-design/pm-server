@@ -43,7 +43,7 @@ class TestRulesModule:
         assert isinstance(TEMPLATE_VERSION, int)
         assert TEMPLATE_VERSION >= 1
 
-    def test_template_version_pinned_at_v11(self):
+    def test_template_version_pinned_at_v12(self):
         # ADR-008 4th-tier guard: a bump must be intentional. v11 is the PM Lens
         # rebrand — the rule-section heading "PM Server 自動行動ルール" becomes
         # "PM Lens 自動行動ルール", so the bump re-injects the new heading into
@@ -51,7 +51,11 @@ class TestRulesModule:
         # ADR-032. v10 added the branch-aware recall rule (PMSERV-125 / ADR-028);
         # v9 the X content pipeline rule (PMSERV-119 / ADR-024); v8 the
         # memory-layer routing rule (PMSERV-111 / ADR-023).
-        assert TEMPLATE_VERSION == 11
+        # v12 generalised the template's self-references for the three hosts
+        # that read AGENTS.md and corrected the ADR-028 branch clause, which
+        # said "hosts without hooks" when Cursor and Grok Build both HAVE
+        # hooks — what they lack is a pmlens-installed one (PMSERV-165).
+        assert TEMPLATE_VERSION == 12
 
     def test_template_contains_x_content_pipeline_section(self):
         # PMSERV-119: the on-signal trigger rule must be present in the
@@ -244,14 +248,21 @@ class TestDetectHosts:
         assert hosts == ["claude-code"]
         assert source == "filesystem+marker+env"
 
-    def test_codex_marker_in_existing_file_detected(
+    def test_agents_md_marker_detects_every_host_that_reads_it(
         self, tmp_path, no_claude_binary, fake_codex_config_absent, clean_host_env
     ):
+        """A managed AGENTS.md is a positive signal for ALL of its readers.
+
+        The marker cannot distinguish codex from cursor from grok — they read
+        the same file. Reporting all three is deliberate: being wrong about
+        WHICH AGENTS.md host is present costs nothing (the file is written once
+        either way), while missing one means it silently gets no rules.
+        """
         (tmp_path / "AGENTS.md").write_text(
             f"<!-- pm-server:begin v={TEMPLATE_VERSION} -->\ny\n<!-- pm-server:end -->\n",
         )
         hosts, source = detect_hosts(tmp_path)
-        assert hosts == ["codex"]
+        assert hosts == ["codex", "cursor", "grok"]
         assert source == "filesystem+marker+env"
 
     def test_claudecode_env_var_detected(
@@ -293,7 +304,24 @@ class TestDetectHosts:
 
 class TestTargetFiles:
     def test_target_files_maps_known_hosts(self):
-        assert TARGET_FILES == {"claude-code": "CLAUDE.md", "codex": "AGENTS.md"}
+        assert TARGET_FILES == {
+            "claude-code": "CLAUDE.md",
+            "codex": "AGENTS.md",
+            "cursor": "AGENTS.md",
+            "grok": "AGENTS.md",
+        }
+
+    def test_target_files_is_derived_from_the_host_registry(self):
+        """No host may exist without a rule file.
+
+        The lookup ``TARGET_FILES[host]`` happens in ``inject_pm_rules``'s
+        comprehension, OUTSIDE ``_safe_inject``'s guard, so a host missing here
+        used to raise a bare KeyError out of an MCP tool rather than a
+        structured per-host failure (PMSERV-165).
+        """
+        from pmlens.hosts import HOSTS
+
+        assert set(TARGET_FILES) == set(HOSTS)
 
 
 class TestInjectResultDataclass:

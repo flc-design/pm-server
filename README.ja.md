@@ -8,9 +8,9 @@
 
 **[English README](README.md)**
 
-**PM Lens for Claude Code + Codex CLI** — 複数 AI コーディングアシスタントに跨る プロジェクト管理 MCP Server
+**PM Lens for Claude Code / Codex CLI / Cursor / Grok Build** — 複数 AI コーディングアシスタントに跨る プロジェクト管理 MCP Server
 
-タスク管理・進捗可視化・意思決定記録を、Claude Code または Codex CLI セッション内の自然言語で。1 つの PM 基盤を複数ホストで共有。
+タスク管理・進捗可視化・意思決定記録を、いま使っているホストのセッション内の自然言語で。1 つの PM 基盤を複数ホストで共有。
 
 ```
 > 進捗は？
@@ -35,7 +35,7 @@
 
 ## 特徴
 
-- **🔌 マルチホストファースト** — `pmlens install --target=auto` 一発で **Claude Code と Codex CLI の両方に登録**。プロジェクトのルールも `CLAUDE.md` と `AGENTS.md` の両方に自動同期 (ADR-008)。プロジェクト途中でホストを切り替えてもコンテキストを失わない — 同じ `.pm/` データ、同じワークフロー
+- **🔌 マルチホストファースト** — `pmlens install --target=auto` 一発で **Claude Code / Codex CLI / Cursor / Grok Build に登録**。プロジェクトのルールも `CLAUDE.md` と `AGENTS.md` の両方に自動同期 (ADR-008)。プロジェクト途中でホストを切り替えてもコンテキストを失わない — 同じ `.pm/` データ、同じワークフロー
 - **44 の MCP ツール** — タスク CRUD、子イシュー、ステータス、ブロッカー、ベロシティ、ダッシュボード、プロンプトパック、ADR、セッションメモリ、ワークフロー、ナレッジレコード、マルチホストルール注入、クロスホスト Outbox ブリッジ、build-in-public X 下書き 等
 - **ワークフローエンジン** — テンプレートベースの開発ワークフロー（ループ、ユーザーゲート、チェイン対応：Discovery → Development）
 - **ナレッジレコード** — カジュアルなメモリとフォーマルな ADR の中間に位置する構造化された知見記録（research、tradeoff、spec 等）
@@ -130,7 +130,7 @@ MCP サーバーは起動時のみ接続するため、復旧後は **Claude Cod
 
 ---
 
-## マルチホスト対応 (Claude Code + Codex CLI)
+## マルチホスト対応 (Claude Code / Codex / Cursor / Grok Build)
 
 PM Lens v0.5.0 は **Claude Code** (`~/.claude/`) と **Codex CLI**
 (`~/.codex/config.toml`) の 2 つの MCP **ホスト** に登録ターゲットとして対応します。
@@ -148,6 +148,8 @@ PM Lens v0.5.0 は **Claude Code** (`~/.claude/`) と **Codex CLI**
 | --------------- | ----------------------------------------------------------------------------- |
 | `claude-code`   | (default) Claude Code のみ登録。`~/.codex/config.toml` には一切触らない。     |
 | `codex`         | Codex CLI のみ登録。`~/.claude/` には一切触らない。                           |
+| `cursor`        | Cursor のみ登録 (`~/.cursor/mcp.json`。`~/.cursor` があれば作成)。            |
+| `grok`          | Grok Build のみ登録 (`~/.grok/config.toml`)。                                |
 | `auto`          | filesystem 検知（`~/.codex/config.toml` の有無）— 検知された host のみ登録。  |
 | `all`           | 全ての既知 host を強制登録。`~/.codex/config.toml` 不在でも作成。             |
 
@@ -200,6 +202,8 @@ pmlens uninstall --target auto
 | ------------- | ---------------- |
 | Claude Code   | `CLAUDE.md`      |
 | Codex CLI     | `AGENTS.md`      |
+| Cursor        | `AGENTS.md`      |
+| Grok Build    | `AGENTS.md`      |
 
 ルールセクションは `<!-- pm-server:begin v=N -->` / `<!-- pm-server:end -->`
 マーカーで囲まれ、**マーカー内のみ in-place で更新** されます — マーカー外の

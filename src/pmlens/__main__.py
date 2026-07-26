@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from . import __version__
+from .utils import TARGET_CHOICES
 
 
 @click.group()
@@ -13,7 +14,10 @@ def cli():
     """PM Lens — Claude Code Project Management."""
 
 
-_TARGET_CHOICES = ["claude-code", "codex", "auto", "all"]
+# Derived from the host registry (PMSERV-165) rather than restated. Nothing
+# used to compare the two, so the CLI could silently offer a different set of
+# hosts than the Python API accepted; tests/test_utils.py now pins the parity.
+_TARGET_CHOICES = list(TARGET_CHOICES)
 
 
 def _print_install_summary(summary) -> None:
@@ -49,10 +53,11 @@ def _print_inject_summary(summary) -> None:
     # Surface a fallback warning ahead of the per-host lines so the user
     # sees it before scrolling past success indicators.
     if summary.detection_source == "fallback":
+        others = ", ".join(h for h in TARGET_CHOICES if h not in ("auto", "all", "claude-code"))
         click.echo(
             "⚠ No host detected via filesystem / marker / env. "
-            "Defaulted to claude-code only — pass --target=codex if running "
-            "under Codex CLI."
+            f"Defaulted to claude-code only — pass --target=<{others}> "
+            "if running under one of those hosts."
         )
 
     for r in summary.results:

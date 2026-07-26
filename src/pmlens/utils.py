@@ -9,6 +9,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from .hosts import HOSTS
 from .models import Phase, ProjectNotFoundError, Task, TaskStatus
 
 # Computed at module import time — represents the bytes Python actually
@@ -195,9 +196,11 @@ def calculate_phase_progress(tasks: list[Task], phase: Phase) -> dict:
 
 # --- MCP host targets (shared by installer.py and rules.py) ---------------
 
-# Tuple order is significant: orchestrators dispatch in this order and the
-# CLI prints results in the same sequence. Keep "claude-code" first.
-_KNOWN_HOSTS: tuple[str, ...] = ("claude-code", "codex")
+# Derived from the single host registry (PMSERV-165) rather than restated.
+# Tuple order is significant — orchestrators dispatch in this order and the CLI
+# prints results in the same sequence — and comes from HOSTS's insertion order,
+# which keeps "claude-code" first.
+_KNOWN_HOSTS: tuple[str, ...] = tuple(HOSTS)
 TARGET_CHOICES: tuple[str, ...] = ("auto", "all", *_KNOWN_HOSTS)
 
 
@@ -215,9 +218,30 @@ def _resolve_targets(target: str) -> list[str]:
     raise ValueError(f"unknown target: {target!r}. Expected one of {TARGET_CHOICES}.")
 
 
+def _host_config_path(host_id: str) -> Path:
+    """Config file a file-registered host stores MCP servers in.
+
+    Lazy on every call so a monkeypatched ``HOME`` is honoured by fixtures.
+
+    Raises:
+        ValueError: if the host is unknown or registers via its own CLI
+            (``claude-code``), which has no config file pmlens edits.
+    """
+    spec = HOSTS.get(host_id)
+    if spec is None:
+        raise ValueError(f"unknown host: {host_id!r}. Expected one of {tuple(HOSTS)}.")
+    if spec.config_file is None:
+        raise ValueError(f"host {host_id!r} registers via {spec.config_label}, not a config file")
+    return spec.config_file()
+
+
 def _codex_config_path() -> Path:
-    """Return the Codex CLI config path (lazy; honors monkeypatched HOME)."""
-    return Path.home() / ".codex" / "config.toml"
+    """Return the Codex CLI config path (lazy; honors monkeypatched HOME).
+
+    Kept as a named helper: it predates the host registry and is imported
+    directly by ``installer`` and ``rules``.
+    """
+    return _host_config_path("codex")
 
 
 # --- File mutation helpers (shared by installer.py and rules.py) ----------

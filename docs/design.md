@@ -603,7 +603,7 @@ def pm_update_rules(project_path: str | None = None,
                     target: str = "auto",
                     dry_run: bool = False) -> dict:
     """CLAUDE.md / AGENTS.md の PM Lens ルールセクションを最新テンプレートに更新（ADR-008、§6 参照）。
-    target は {auto, all, claude-code, codex} の 4 値。auto は filesystem/marker/CLAUDECODE
+    target は {auto, all} + hosts.HOSTS の全 host id（現在 claude-code, codex, cursor, grok）。auto は filesystem/marker/CLAUDECODE
     で検知された host のみ対象。マーカーで識別して PM Lens セクションのみ置換。"""
 
 @mcp.tool()
@@ -658,7 +658,7 @@ def migrate():
 
 @cli.command("update-rules")
 @click.option("--target", "-t",
-              type=click.Choice(["auto", "all", "claude-code", "codex"]),
+              type=click.Choice(list(TARGET_CHOICES)),  # registry-derived (PMSERV-165)
               default="auto", show_default=True,
               help="Which host's rule file to update.")
 @click.option("--dry-run", is_flag=True,
@@ -1054,7 +1054,7 @@ def inject_pm_rules(
 ) -> InjectSummary: ...
 ```
 
-`target` の許容値は **{"auto", "all", "claude-code", "codex"}** の 4 値
+`target` の許容値は **{"auto", "all"} + `hosts.HOSTS` の全 host id**（PMSERV-165 以降は registry 由来。現在 claude-code / codex / cursor / grok）
 (ADR-008 amendment A1/A2、`utils.TARGET_CHOICES`)。`auto` がデフォルトであり、
 `installer.py` の `install` (default `claude-code`) と非対称になっている。
 理由: `inject_pm_rules` / `pm_update_rules` は v0.5.0 で **新規追加** の API

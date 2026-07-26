@@ -1,9 +1,13 @@
 """Project rules auto-management for PM Lens.
 
 Manages a marker-delimited section in target rule files (``CLAUDE.md``
-for Claude Code; ``AGENTS.md`` for Codex CLI). This module is the
-general-purpose foundation for multi-host rule injection introduced by
-ADR-008 and elaborated in PMSERV-044.
+for Claude Code; ``AGENTS.md`` for Codex CLI, Cursor and Grok Build).
+This module is the general-purpose foundation for multi-host rule
+injection introduced by ADR-008 and elaborated in PMSERV-044, with the
+host facts themselves moved into :mod:`pmlens.hosts` by PMSERV-165.
+
+Because three hosts share ``AGENTS.md``, injection is keyed on the rule
+FILE rather than on the host — see :func:`inject_pm_rules`.
 
 For backward compatibility, ``pmlens.claudemd`` re-exports every
 v0.4.x-vintage symbol below; existing callers continue to work
@@ -15,22 +19,32 @@ from __future__ import annotations
 import os
 import re
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
-from .utils import _atomic_write_text, _codex_config_path, _timestamped_backup
+from .hosts import HOSTS, hosts_reading_both_rule_files, rule_files
+from .utils import _atomic_write_text, _timestamped_backup
 
 # Mapping from host id (used by `target` arg) to the rule-file basename
 # managed in the project root. Same marker scheme is reused across hosts
 # (ADR-008 #6) — Codex parses Markdown verbatim so HTML comments are
 # inert (validated by SynapticLedger's existing AGENTS.md marker block).
-TARGET_FILES: dict[str, str] = {
-    "claude-code": "CLAUDE.md",
-    "codex": "AGENTS.md",
-}
+#
+# Derived from the host registry (PMSERV-165), never restated: a host present
+# in _KNOWN_HOSTS but absent here used to raise a bare KeyError out of an MCP
+# tool, because the lookup happens in inject_pm_rules's comprehension — OUTSIDE
+# _safe_inject's guard. Several hosts map to the same file; see
+# inject_pm_rules for the deduplication that implies.
+TARGET_FILES: dict[str, str] = rule_files()
+assert set(TARGET_FILES) == set(HOSTS), "TARGET_FILES drifted from the host registry"
 
-TEMPLATE_VERSION = 11
+# v12 (PMSERV-165): the template is injected into AGENTS.md for Codex, Cursor
+# and Grok Build as well as into CLAUDE.md, so its self-references had to stop
+# naming CLAUDE.md; and the ADR-028 branch clause was factually wrong — it keyed
+# on "hosts without hooks", but Cursor and Grok Build both HAVE session hooks;
+# what they lack is a pmlens-installed one.
+TEMPLATE_VERSION = 12
 BEGIN_MARKER = "<!-- pm-server:begin v={version} -->"
 END_MARKER = "<!-- pm-server:end -->"
 BEGIN_PATTERN = re.compile(r"<!-- pm-server:begin v=(\d+) -->")
@@ -47,7 +61,7 @@ CLAUDEMD_TEMPLATE = """\
    track= を渡す。下記「ブランチ単位のセッション継続」を参照）
 4. ブロッカーや期限超過があれば警告する
 5. pm_status の claudemd.other_rule_sections に他のルールセクションが報告された場合、
-   この CLAUDE.md 内の該当セクションのルールも全て実行する
+   このルールファイル内の該当セクションのルールも全て実行する
 
 ### ブランチ単位のセッション継続（branch-aware recall, ADR-028）
 複数の作業ライン（feature ブランチ / worktree）を行き来する場合、pm_recall に track= を
@@ -55,8 +69,10 @@ CLAUDEMD_TEMPLATE = """\
 最新を返すので後方互換）。track= に渡す値の決め方:
 1. **プラグイン環境（Claude Code plugin）**: session-start hook が現在のブランチを提示する
    ので、その値をそのまま pm_recall(track=...) に渡す。
-2. **hook の無いホスト（手動 MCP 接続・Codex CLI 等）**: hook が無いため、ホスト側（=あなた）
-   が自分でブランチを求める責務を負う。セッション開始時、および git checkout / switch で
+2. **pmlens の hook が入っていないホスト（手動 MCP 接続・Codex CLI・Cursor・Grok Build 等）**:
+   Cursor と Grok Build 自体は session hook を持つが、pmlens はそれらに hook を導入しない。
+   したがってブランチを提示してくれる hook が無く、ホスト側（=あなた）が自分でブランチを
+   求める責務を負う。セッション開始時、および git checkout / switch で
    ブランチを切り替えた直後に、リポジトリの .git/HEAD を読んで現在のブランチ名を求め
    （`ref: refs/heads/<branch>` の <branch> 部分。HEAD が SHA だけの detached HEAD や、
    .git が file の worktree はブランチ無しとして扱う）、その値を pm_recall(track="<branch>")
@@ -342,11 +358,16 @@ def get_rules_status(project_root: Path) -> dict[str, dict]:
     ``has_pm_section``, ``version``, ``up_to_date``,
     ``other_rule_sections``. Host ids use underscore form
     (``"claude_code"``, ``"codex"``) so the dict is ergonomic in JSON
-    and Python attribute-like access.
+    and Python attribute-like access — hence ``HostSpec.status_key``
+    rather than deriving the key from ``host_id`` and silently renaming
+    ``claude_code`` to ``claude-code``.
+
+    Hosts sharing a rule file (``codex``, ``cursor`` and ``grok`` all read
+    ``AGENTS.md``) therefore report **identical** status. That is accurate —
+    each of them really does see that marker — not a bug.
     """
     return {
-        "claude_code": _scan_rule_file(project_root / TARGET_FILES["claude-code"]),
-        "codex": _scan_rule_file(project_root / TARGET_FILES["codex"]),
+        spec.status_key: _scan_rule_file(project_root / spec.rule_file) for spec in HOSTS.values()
     }
 
 
@@ -370,9 +391,11 @@ def _has_pm_marker(path: Path) -> bool:
 def detect_hosts(project_root: Path) -> tuple[list[str], str]:
     """Detect which MCP hosts are present, returning (hosts, source).
 
-    Strategy (PMSERV-044 spec v1, validated by super-research):
-    1. **Filesystem (primary, deterministic)**: ``shutil.which("claude")``
-       for Claude Code, ``~/.codex/config.toml`` exists for Codex.
+    Strategy (PMSERV-044 spec v1, validated by super-research; extended to
+    four hosts by PMSERV-165):
+    1. **Filesystem (primary, deterministic)**: the host's install marker
+       exists (``~/.codex/config.toml``, ``~/.cursor/``, ``~/.grok/config.toml``)
+       or one of its ``probe_binaries`` is on PATH.
     2. **Marker (positive signal)**: a project file already containing the
        pm-server marker proves the host is in active use here.
     3. **CLAUDECODE env var (positive signal only, never negative
@@ -382,6 +405,18 @@ def detect_hosts(project_root: Path) -> tuple[list[str], str]:
     4. **Tertiary fallback**: ``["claude-code"]`` — caller MUST surface
        a warning so the user can opt into an explicit ``target``.
 
+    **RO invariant (ADR-028).** This function is reachable from ``pm_status``
+    via ``get_rules_status``, a read-only MCP tool, so every probe is
+    ``shutil.which`` / ``Path.exists`` / ``os.environ`` only. Never run a
+    host's own CLI (``grok inspect``, ``cursor-agent --version``) from here —
+    that would put a subprocess on a read path.
+
+    Note that ``codex``, ``cursor`` and ``grok`` share ``AGENTS.md``, so the
+    marker signal cannot tell them apart: a project with a pm-managed
+    AGENTS.md reports all three. That is deliberate — being wrong about
+    *which* AGENTS.md host is present costs nothing (the file is written once
+    either way), whereas missing a host means it silently gets no rules.
+
     Returns:
         A 2-tuple ``(hosts, source)`` where ``source`` is one of
         ``"filesystem+marker+env"`` (any positive signal fired) or
@@ -389,17 +424,15 @@ def detect_hosts(project_root: Path) -> tuple[list[str], str]:
     """
     hosts: set[str] = set()
 
-    # Filesystem (primary)
-    if shutil.which("claude") is not None:
-        hosts.add("claude-code")
-    if _codex_config_path().exists():
-        hosts.add("codex")
-
-    # Marker (positive signal)
-    if _has_pm_marker(project_root / TARGET_FILES["claude-code"]):
-        hosts.add("claude-code")
-    if _has_pm_marker(project_root / TARGET_FILES["codex"]):
-        hosts.add("codex")
+    for host_id, spec in HOSTS.items():
+        # Filesystem (primary)
+        if spec.install_marker is not None and spec.install_marker().exists():
+            hosts.add(host_id)
+        elif any(shutil.which(binary) is not None for binary in spec.probe_binaries):
+            hosts.add(host_id)
+        # Marker (positive signal)
+        if _has_pm_marker(project_root / spec.rule_file):
+            hosts.add(host_id)
 
     # Env var (positive only)
     if os.environ.get("CLAUDECODE") == "1":
@@ -409,6 +442,57 @@ def detect_hosts(project_root: Path) -> tuple[list[str], str]:
         return sorted(hosts), "filesystem+marker+env"
 
     return ["claude-code"], "fallback"
+
+
+def duplicate_rule_file_warning(project_root: Path) -> dict | None:
+    """Warn when a detected host would read the PM rules twice (PMSERV-165).
+
+    Grok Build scans ``AGENTS.md`` **and** ``CLAUDE.md`` in the same directory
+    and loads every match, so a project managed for both Claude Code and Codex
+    feeds it the same rule block twice. Neither file can be removed — Claude
+    Code and Codex each need their own — so this is reported, not fixed.
+
+    Only fires when the duplication is real: the host must actually be present
+    on this machine, and both files must actually carry the pm-server marker.
+
+    Returns:
+        A ``warnings[]``-shaped dict, or ``None`` when nothing duplicates.
+    """
+    doubling = [
+        HOSTS[h]
+        for h in hosts_reading_both_rule_files()
+        if HOSTS[h].install_marker is not None and HOSTS[h].install_marker().exists()
+    ]
+    if not doubling:
+        return None
+
+    affected = [
+        spec
+        for spec in doubling
+        if spec.rule_file != "CLAUDE.md"
+        and _has_pm_marker(project_root / spec.rule_file)
+        and _has_pm_marker(project_root / "CLAUDE.md")
+    ]
+    if not affected:
+        return None
+
+    names = ", ".join(spec.display_name for spec in affected)
+    files = ", ".join(sorted({spec.rule_file for spec in affected} | {"CLAUDE.md"}))
+    return {
+        "code": "duplicate_rule_file_for_host",
+        "message": (
+            f"{names} reads every recognised rule file in a directory, and this "
+            f"project has the PM Lens section in both {files}. Those hosts "
+            "therefore receive the same rules twice, consuming context without "
+            "adding information. Claude Code and Codex each require their own "
+            "file, so removing one is not the fix."
+        ),
+        "remediation": (
+            "Harmless but wasteful. To avoid it in a repo used ONLY with "
+            f"{names}, keep AGENTS.md and drop the CLAUDE.md PM section "
+            "(pm_update_rules(target='codex') writes AGENTS.md alone)."
+        ),
+    }
 
 
 #: The statuses a single rule-file injection can yield. Annotating
@@ -437,7 +521,13 @@ class InjectResult:
 
     Attributes:
         target_file: ``"CLAUDE.md"`` or ``"AGENTS.md"``.
-        host: ``"claude-code"`` or ``"codex"``.
+        host: The host that OWNS this file — the first, in registry order,
+            among those that read it. Several hosts share ``AGENTS.md``; this
+            field stays single-valued for backward compatibility.
+        hosts: Every host that reads ``target_file``, in registry order.
+            ``("codex", "cursor", "grok")`` for a shared ``AGENTS.md``. Empty
+            when the result was constructed directly rather than by
+            ``inject_pm_rules`` (per-host failure paths).
         status: ``"created"``, ``"appended"``, ``"updated"``,
             ``"skipped"``, or ``"failed"``.
         message: Human-readable detail. Does NOT include backup path or
@@ -458,6 +548,7 @@ class InjectResult:
     message: str
     backup_path: Path | None = None
     is_dry_run: bool = False
+    hosts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -726,9 +817,24 @@ def inject_pm_rules(
         hosts = [target]
         source = "explicit"
 
-    # Per-host injection (best-effort, isolated failures)
+    # Deduplicate by rule FILE, not by host (PMSERV-165). Three hosts read
+    # AGENTS.md; iterating hosts would back up and rewrite that one file three
+    # times and return three InjectResults each claiming a different host wrote
+    # it — the second and third would also report "skipped, already current"
+    # because the first had just written it. The first host (in `hosts` order,
+    # which follows the HOSTS registry) owns the result; `InjectResult.hosts`
+    # names every host that reads it.
+    file_owners: dict[str, list[str]] = {}
+    for host in hosts:
+        file_owners.setdefault(TARGET_FILES[host], []).append(host)
+
+    # Per-file injection (best-effort, isolated failures)
     results = [
-        _safe_inject(project_root / TARGET_FILES[host], host, dry_run=dry_run) for host in hosts
+        replace(
+            _safe_inject(project_root / rule_file, owners[0], dry_run=dry_run),
+            hosts=tuple(owners),
+        )
+        for rule_file, owners in file_owners.items()
     ]
 
     # Aggregate UX-surfaced lists

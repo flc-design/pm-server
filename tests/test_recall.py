@@ -264,7 +264,9 @@ class TestClaudeMdV3:
         # v10: branch-aware recall rule (PMSERV-125 / ADR-028); v9 was the
         # X content pipeline rule (PMSERV-119 / ADR-024); v8 was the
         # memory-layer routing rule (PMSERV-111 / ADR-023).
-        assert TEMPLATE_VERSION == 11
+        # v12: host-neutral self-references + corrected ADR-028 branch clause
+        # for the AGENTS.md hosts (PMSERV-165).
+        assert TEMPLATE_VERSION == 12
 
     def test_template_has_pm_recall(self):
         from pmlens.claudemd import CLAUDEMD_TEMPLATE

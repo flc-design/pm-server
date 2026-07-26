@@ -2,12 +2,17 @@
 
 Registers (or unregisters) pm-server as an MCP server in supported hosts.
 
-Hosts:
+Hosts (see :mod:`pmlens.hosts` for the registry that drives dispatch):
     - Claude Code: registers via ``claude mcp add`` (user scope).
-    - Codex CLI: edits ``~/.codex/config.toml`` via tomlkit with
-      timestamped backup, idempotent field-level updates, and atomic
-      write. Sub-tables under ``[mcp_servers.pm-server.*]`` (such as
-      per-tool ``approval_mode`` customizations) are preserved.
+    - Codex CLI / Grok Build: edit ``~/.codex/config.toml`` and
+      ``~/.grok/config.toml`` via tomlkit with timestamped backup,
+      idempotent field-level updates, and atomic write. Sub-tables under
+      ``[mcp_servers.pmlens.*]`` (such as per-tool ``approval_mode``
+      customizations) are preserved. The two formats are identical, so
+      one implementation serves both.
+    - Cursor: edits ``~/.cursor/mcp.json`` (``{"mcpServers": {...}}``) with
+      the same backup/idempotency contract. An unparseable file is reported
+      as ``failed`` and left untouched rather than overwritten.
 
 Public surface:
     - ``install(target="claude-code") / uninstall(target="claude-code")``:
@@ -28,6 +33,7 @@ Public surface:
 from __future__ import annotations
 
 import copy
+import json
 import os
 import shutil
 import subprocess
@@ -40,12 +46,58 @@ from typing import Literal
 
 import tomlkit
 
+from .hosts import HOSTS, HostSpec
 from .utils import (
     _atomic_write_text,
     _codex_config_path,
+    _host_config_path,
     _resolve_targets,
     _timestamped_backup,
 )
+
+
+# Per-host path seams. Every host-config path a writer touches is resolved
+# through a module-level function here, NOT through HostSpec.config_file
+# directly. That is deliberate: tests monkeypatch these names to redirect a
+# writer at tmp_path, and a writer that reaches around them writes to the
+# developer's REAL ~/.codex, ~/.cursor or ~/.grok. Keep the seam.
+def _grok_config_path() -> Path:
+    """Grok Build config path (lazy; honors monkeypatched HOME)."""
+    return _host_config_path("grok")
+
+
+def _cursor_config_path() -> Path:
+    """Cursor MCP config path (lazy; honors monkeypatched HOME)."""
+    return _host_config_path("cursor")
+
+
+def _cursor_config_dir() -> Path:
+    """Cursor's config DIRECTORY — its existence is the install signal.
+
+    Unlike Codex and Grok, an installed Cursor may have no ``mcp.json`` yet
+    (or an empty one), so the file's absence must not be read as "Cursor is
+    not installed".
+    """
+    return _cursor_config_path().parent
+
+
+#: Keys inside a ``pmlens`` server entry that pmlens owns and may rewrite or
+#: delete. Anything else in that entry was put there by the user and survives
+#: both install and uninstall. ``type`` is Cursor-only but harmless elsewhere.
+_MANAGED_SERVER_KEYS: tuple[str, ...] = ("type", "command", "args", "startup_timeout_sec")
+
+#: Env keys pmlens owns inside a server entry (see ``_lens_mode_active``).
+_MANAGED_ENV_KEYS: tuple[str, ...] = ("PM_LENS", "PM_DESKTOP_WRITE")
+
+
+def _managed_env(*, lens_mode: bool, desktop_write_mode: bool) -> dict[str, str]:
+    """The env block pmlens wants on a server entry for the current mode."""
+    env: dict[str, str] = {}
+    if lens_mode:
+        env["PM_LENS"] = "1"
+    if desktop_write_mode:
+        env["PM_DESKTOP_WRITE"] = "1"
+    return env
 
 
 def _lens_mode_active() -> bool:
@@ -387,39 +439,45 @@ def _atomic_write_toml(path: Path, doc: tomlkit.TOMLDocument) -> None:
     _atomic_write_text(path, tomlkit.dumps(doc))
 
 
-def install_codex(*, dry_run: bool = False) -> InstallResult:
-    """Register pm-server as a Codex CLI MCP server.
+def _install_toml_host(
+    spec: HostSpec, config_path: Path, *, dry_run: bool = False
+) -> InstallResult:
+    """Register pmlens as an MCP server in a TOML-configured host.
 
-    Edits ``~/.codex/config.toml`` via tomlkit:
-        - Detect: skip if config.toml does not exist (no side effect on
-          non-Codex installations).
-        - Resolve: absolute pm-server path via :func:`_resolve_pm_server_path`.
-        - Backup: timestamped copy under ``~/.codex/config.toml.bak.<ts>``.
-        - Update: field-level edits to ``[mcp_servers.pmlens]`` so any
-          user-defined sub-tables (such as per-tool ``approval_mode``
-          customizations) and surrounding comments are preserved.
+    Codex CLI and Grok Build use structurally identical config: a
+    ``[mcp_servers.pmlens]`` table with ``command`` / ``args`` / ``env``
+    inside a user-level ``config.toml``. This is the Codex implementation
+    generalised over :class:`~pmlens.hosts.HostSpec` rather than copied
+    (PMSERV-165) — the idempotency comparison, the sub-table preservation and
+    the dry-run prediction are subtle enough that a second copy would drift.
+
+    Behaviour:
+        - Detect: skip if the config file does not exist (no side effect on
+          machines where the host is not installed).
+        - Resolve: absolute pmlens path via :func:`_resolve_pm_server_path`.
+        - Backup: timestamped copy alongside the config.
+        - Update: field-level edits so user-defined sub-tables (per-tool
+          ``approval_mode`` and the like) and surrounding comments survive.
         - Atomic write: tempfile + os.replace.
 
     Args:
-        dry_run: When ``True``, detection, parsing, path resolution, and
+        spec: The host to register with. Must have ``registration="toml"``.
+        dry_run: When ``True``, detection, parsing, path resolution and
             in-memory mutation still occur (so the predicted status is
-            accurate), but ``_backup_codex_config`` and
-            ``_atomic_write_toml`` are skipped — the config file on disk
-            is untouched and ``backup_path`` is ``None``.
+            accurate), but no backup is taken and nothing is written.
 
     Returns:
-        ``InstallResult`` with ``target="codex"``. On install/update,
-        ``backup_path`` points at the saved-aside copy (``None`` for
-        dry-run).
+        ``InstallResult`` with ``target=spec.host_id``. On install/update,
+        ``backup_path`` points at the saved-aside copy (``None`` for dry-run).
     """
     lens_mode = _lens_mode_active()
     desktop_write_mode = _desktop_write_mode_active()
-    config_path = _codex_config_path()
+    mcp_key = spec.mcp_key
     if not config_path.exists():
         return InstallResult(
-            target="codex",
+            target=spec.host_id,
             status="skipped",
-            message="~/.codex/config.toml not found — Codex CLI not installed",
+            message=f"{spec.config_label} not found — {spec.display_name} not installed",
             is_dry_run=dry_run,
             lens_mode=lens_mode,
         )
@@ -432,8 +490,8 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
     # PM_LENS/PM_DESKTOP_WRITE env presence — no mutation, no backup needed.
     # PMSERV-087 + PMSERV-100: we compare both env flags, so flipping either
     # one across reinstalls re-registers cleanly without stale env left over.
-    if "mcp_servers" in doc and "pmlens" in doc["mcp_servers"]:
-        existing = doc["mcp_servers"]["pmlens"]
+    if mcp_key in doc and "pmlens" in doc[mcp_key]:
+        existing = doc[mcp_key]["pmlens"]
         existing_command = existing.get("command")
         existing_env = existing.get("env") or {}
         existing_has_lens = str(existing_env.get("PM_LENS", "")) == "1"
@@ -445,9 +503,9 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
             and existing_has_desktop_write == desktop_write_mode
         ):
             return InstallResult(
-                target="codex",
+                target=spec.host_id,
                 status="already_registered",
-                message="PM Lens is already registered in Codex",
+                message=f"PM Lens is already registered in {spec.display_name}",
                 is_dry_run=dry_run,
                 lens_mode=lens_mode,
             )
@@ -455,19 +513,19 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
     if dry_run:
         # Predict the outcome without creating a backup or writing anything.
         suffix = " in Lens (read-only) mode" if lens_mode else ""
-        if "mcp_servers" not in doc or "pmlens" not in doc.get("mcp_servers", {}):
+        if mcp_key not in doc or "pmlens" not in doc.get(mcp_key, {}):
             message = (
-                f"would register PM Lens in Codex (user scope){suffix}. "
-                "Would back up to ~/.codex/config.toml.bak.<ts> before write."
+                f"would register PM Lens in {spec.display_name} (user scope){suffix}. "
+                f"Would back up to {spec.config_label}.bak.<ts> before write."
             )
         else:
             message = (
-                f"would update PM Lens in Codex{suffix} "
+                f"would update PM Lens in {spec.display_name}{suffix} "
                 "(path or PM_LENS env changed). "
-                "Would back up to ~/.codex/config.toml.bak.<ts> before write."
+                f"Would back up to {spec.config_label}.bak.<ts> before write."
             )
         return InstallResult(
-            target="codex",
+            target=spec.host_id,
             status="installed",
             message=message,
             backup_path=None,
@@ -475,11 +533,11 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
             lens_mode=lens_mode,
         )
 
-    backup_path = _backup_codex_config(config_path)
+    backup_path = _timestamped_backup(config_path)
 
-    if "mcp_servers" not in doc:
-        doc["mcp_servers"] = tomlkit.table()
-    if "pmlens" not in doc["mcp_servers"]:
+    if mcp_key not in doc:
+        doc[mcp_key] = tomlkit.table()
+    if "pmlens" not in doc[mcp_key]:
         section = tomlkit.table()
         section["command"] = str(pm_server_path)
         section["args"] = ["serve"]
@@ -491,14 +549,14 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
             if desktop_write_mode:
                 env_table["PM_DESKTOP_WRITE"] = "1"
             section["env"] = env_table
-        doc["mcp_servers"]["pmlens"] = section
+        doc[mcp_key]["pmlens"] = section
         suffix = " in Lens (read-only) mode" if lens_mode else ""
         message = (
-            f"PM Lens registered in Codex (user scope){suffix}. "
-            f"Backup at {backup_path}. Restart Codex to activate."
+            f"PM Lens registered in {spec.display_name} (user scope){suffix}. "
+            f"Backup at {backup_path}. Restart {spec.display_name} to activate."
         )
     else:
-        section = doc["mcp_servers"]["pmlens"]
+        section = doc[mcp_key]["pmlens"]
         section["command"] = str(pm_server_path)
         section["args"] = ["serve"]
         if "startup_timeout_sec" not in section:
@@ -528,14 +586,15 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
                     del section["env"]
         suffix = " in Lens (read-only) mode" if lens_mode else ""
         message = (
-            f"PM Lens updated in Codex{suffix} (path or PM_LENS env changed). "
-            f"Backup at {backup_path}. Restart Codex to activate."
+            f"PM Lens updated in {spec.display_name}{suffix} "
+            "(path or PM_LENS env changed). "
+            f"Backup at {backup_path}. Restart {spec.display_name} to activate."
         )
 
     _atomic_write_toml(config_path, doc)
 
     return InstallResult(
-        target="codex",
+        target=spec.host_id,
         status="installed",
         message=message,
         backup_path=str(backup_path),
@@ -543,84 +602,103 @@ def install_codex(*, dry_run: bool = False) -> InstallResult:
     )
 
 
-def uninstall_codex(*, dry_run: bool = False) -> InstallResult:
-    """Remove pm-server registration from Codex CLI config.
+def install_codex(*, dry_run: bool = False) -> InstallResult:
+    """Register pmlens as a Codex CLI MCP server (``~/.codex/config.toml``)."""
+    return _install_toml_host(HOSTS["codex"], _codex_config_path(), dry_run=dry_run)
+
+
+def install_grok(*, dry_run: bool = False) -> InstallResult:
+    """Register pmlens as a Grok Build MCP server (``~/.grok/config.toml``).
+
+    Grok Build reads Claude Code's and Cursor's MCP configs as *compatibility*
+    sources already, so a user who ran ``pmlens install`` for Claude Code often
+    finds pmlens working in Grok with no further action. Registering natively
+    still matters: the compatibility scan is opt-out
+    (``[compat.claude] mcps = false``), it is merged at LOWER priority than
+    ``config.toml``, and it makes pmlens's presence explicit rather than
+    inherited.
+    """
+    return _install_toml_host(HOSTS["grok"], _grok_config_path(), dry_run=dry_run)
+
+
+def _uninstall_toml_host(
+    spec: HostSpec, config_path: Path, *, dry_run: bool = False
+) -> InstallResult:
+    """Remove the pmlens registration from a TOML-configured host.
 
     Removes only the top-level fields (``command``, ``args``,
-    ``startup_timeout_sec``). If the user has customized sub-tables
-    such as ``[mcp_servers.pmlens.tools.pm_init]``, the parent
-    section is preserved with a notice in the result message —
-    those customizations are left untouched and require manual
-    cleanup if no longer wanted.
+    ``startup_timeout_sec``). If the user has customized sub-tables such as
+    ``[mcp_servers.pmlens.tools.pm_init]``, the parent section is preserved
+    with a notice in the result message — those customizations are left
+    untouched and require manual cleanup if no longer wanted.
 
     Args:
+        spec: The host to unregister from. Must have ``registration="toml"``.
         dry_run: When ``True``, detection and parsing still run so the
             predicted outcome (full removal vs sub-tables-preserved) is
-            accurate, but ``_backup_codex_config`` and
-            ``_atomic_write_toml`` are skipped.
+            accurate, but nothing is backed up or written.
 
     Returns:
-        ``InstallResult`` with ``target="codex"``.
+        ``InstallResult`` with ``target=spec.host_id``.
     """
-    config_path = _codex_config_path()
+    mcp_key = spec.mcp_key
     if not config_path.exists():
         return InstallResult(
-            target="codex",
+            target=spec.host_id,
             status="skipped",
-            message="~/.codex/config.toml not found — nothing to uninstall",
+            message=f"{spec.config_label} not found — nothing to uninstall",
             is_dry_run=dry_run,
         )
 
     doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
 
-    if "mcp_servers" not in doc or "pmlens" not in doc["mcp_servers"]:
+    if mcp_key not in doc or "pmlens" not in doc[mcp_key]:
         return InstallResult(
-            target="codex",
+            target=spec.host_id,
             status="skipped",
-            message="PM Lens not registered in Codex",
+            message=f"PM Lens not registered in {spec.display_name}",
             is_dry_run=dry_run,
         )
 
     if dry_run:
         # Predict whether the section would be fully removed or only
         # top-level fields stripped (sub-tables preserved).
-        section = doc["mcp_servers"]["pmlens"]
-        managed = ("command", "args", "startup_timeout_sec")
-        residual_keys = [k for k in section.keys() if k not in managed]
+        section = doc[mcp_key]["pmlens"]
+        residual_keys = [k for k in section.keys() if k not in _MANAGED_SERVER_KEYS]
         if not residual_keys:
             message = (
-                "would unregister PM Lens from Codex. "
-                "Would back up to ~/.codex/config.toml.bak.<ts> before write."
+                f"would unregister PM Lens from {spec.display_name}. "
+                f"Would back up to {spec.config_label}.bak.<ts> before write."
             )
         else:
             message = (
-                "would remove PM Lens top-level fields from Codex. "
+                f"would remove PM Lens top-level fields from {spec.display_name}. "
                 "Sub-tables would be preserved — remove manually if no longer needed. "
-                "Would back up to ~/.codex/config.toml.bak.<ts> before write."
+                f"Would back up to {spec.config_label}.bak.<ts> before write."
             )
         return InstallResult(
-            target="codex",
+            target=spec.host_id,
             status="uninstalled",
             message=message,
             backup_path=None,
             is_dry_run=True,
         )
 
-    backup_path = _backup_codex_config(config_path)
+    backup_path = _timestamped_backup(config_path)
 
-    section = doc["mcp_servers"]["pmlens"]
-    for key in ("command", "args", "startup_timeout_sec"):
+    section = doc[mcp_key]["pmlens"]
+    for key in _MANAGED_SERVER_KEYS:
         if key in section:
             del section[key]
 
     if not section:
-        del doc["mcp_servers"]["pmlens"]
-        if not doc["mcp_servers"]:
-            del doc["mcp_servers"]
-        message = f"PM Lens unregistered from Codex. Backup at {backup_path}."
+        del doc[mcp_key]["pmlens"]
+        if not doc[mcp_key]:
+            del doc[mcp_key]
+        message = f"PM Lens unregistered from {spec.display_name}. Backup at {backup_path}."
     else:
         message = (
-            "PM Lens top-level fields removed from Codex. "
+            f"PM Lens top-level fields removed from {spec.display_name}. "
             "Sub-tables preserved — remove manually if no longer needed. "
             f"Backup at {backup_path}."
         )
@@ -628,11 +706,257 @@ def uninstall_codex(*, dry_run: bool = False) -> InstallResult:
     _atomic_write_toml(config_path, doc)
 
     return InstallResult(
-        target="codex",
+        target=spec.host_id,
         status="uninstalled",
         message=message,
         backup_path=str(backup_path),
     )
+
+
+def uninstall_codex(*, dry_run: bool = False) -> InstallResult:
+    """Remove the pmlens registration from Codex CLI config."""
+    return _uninstall_toml_host(HOSTS["codex"], _codex_config_path(), dry_run=dry_run)
+
+
+def uninstall_grok(*, dry_run: bool = False) -> InstallResult:
+    """Remove the pmlens registration from Grok Build config."""
+    return _uninstall_toml_host(HOSTS["grok"], _grok_config_path(), dry_run=dry_run)
+
+
+# --- Host: Cursor (JSON) --------------------------------------------------
+
+
+def _read_json_config(path: Path) -> dict:
+    """Load a host's JSON MCP config, tolerating the empty-file case.
+
+    A 0-byte ``~/.cursor/mcp.json`` is a real state on real machines (Cursor
+    creates the file before anything writes servers into it), and
+    ``json.loads("")`` raises. Treat empty/whitespace as "no servers yet".
+    Malformed JSON is NOT swallowed — the caller turns it into a failure
+    rather than overwriting a file it could not understand.
+    """
+    if not path.exists():
+        return {}
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {}
+    doc = json.loads(raw)
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path} does not contain a JSON object")
+    return doc
+
+
+def _write_json_config(path: Path, doc: dict) -> None:
+    """Atomically write a host's JSON MCP config, with a trailing newline."""
+    _atomic_write_text(path, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+
+
+def _install_json_host(
+    spec: HostSpec, config_path: Path, marker: Path, *, dry_run: bool = False
+) -> InstallResult:
+    """Register pmlens as an MCP server in a JSON-configured host (Cursor).
+
+    Same contract as :func:`_install_toml_host`, over
+    ``{"mcpServers": {"pmlens": {...}}}``. Two differences that matter:
+
+    * **Presence is signalled by the directory, not the file.** ``~/.cursor``
+      exists on an installed Cursor; ``mcp.json`` may not exist yet, or may
+      exist as an empty file. So the config file is created when absent
+      instead of being treated as "host not installed".
+    * **Cursor documents ``type`` as required** for stdio servers, unlike
+      Claude Code's ``.mcp.json`` where the transport is inferred.
+    """
+    lens_mode = _lens_mode_active()
+    desktop_write_mode = _desktop_write_mode_active()
+
+    if not marker.exists():
+        return InstallResult(
+            target=spec.host_id,
+            status="skipped",
+            message=f"{marker} not found — {spec.display_name} not installed",
+            is_dry_run=dry_run,
+            lens_mode=lens_mode,
+        )
+
+    pm_server_path = _resolve_pm_server_path()
+    try:
+        doc = _read_json_config(config_path)
+    except (ValueError, json.JSONDecodeError) as e:
+        return InstallResult(
+            target=spec.host_id,
+            status="failed",
+            message=(
+                f"{spec.config_label} is not valid JSON ({e}); refusing to "
+                "overwrite it. Fix or move the file, then re-run."
+            ),
+            is_dry_run=dry_run,
+            lens_mode=lens_mode,
+        )
+
+    env = _managed_env(lens_mode=lens_mode, desktop_write_mode=desktop_write_mode)
+    servers = doc.get(spec.mcp_key) or {}
+    existing = servers.get("pmlens") or {}
+    if (
+        existing.get("command") == str(pm_server_path)
+        and existing.get("args") == ["serve"]
+        and (existing.get("env") or {}) == env
+    ):
+        return InstallResult(
+            target=spec.host_id,
+            status="already_registered",
+            message=f"PM Lens is already registered in {spec.display_name}",
+            is_dry_run=dry_run,
+            lens_mode=lens_mode,
+        )
+
+    suffix = " in Lens (read-only) mode" if lens_mode else ""
+    verb = "update" if existing else "register"
+    if dry_run:
+        return InstallResult(
+            target=spec.host_id,
+            status="installed",
+            message=(
+                f"would {verb} PM Lens in {spec.display_name} (user scope){suffix}. "
+                f"Would back up to {spec.config_label}.bak.<ts> before write."
+                if config_path.exists()
+                else f"would {verb} PM Lens in {spec.display_name} (user scope){suffix}. "
+                f"Would create {spec.config_label}."
+            ),
+            backup_path=None,
+            is_dry_run=True,
+            lens_mode=lens_mode,
+        )
+
+    backup_path = _timestamped_backup(config_path) if config_path.exists() else None
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Field-level edit, mirroring the TOML path: keys the user added to OUR
+    # entry (and every other server) survive.
+    entry = dict(existing)
+    entry["type"] = "stdio"
+    entry["command"] = str(pm_server_path)
+    entry["args"] = ["serve"]
+    if env:
+        entry["env"] = env
+    else:
+        merged_env = {
+            k: v for k, v in (existing.get("env") or {}).items() if k not in _MANAGED_ENV_KEYS
+        }
+        if merged_env:
+            entry["env"] = merged_env
+        else:
+            entry.pop("env", None)
+
+    doc.setdefault(spec.mcp_key, {})
+    doc[spec.mcp_key]["pmlens"] = entry
+    _write_json_config(config_path, doc)
+
+    where = f"Backup at {backup_path}." if backup_path else f"Created {spec.config_label}."
+    return InstallResult(
+        target=spec.host_id,
+        status="installed",
+        message=(
+            f"PM Lens {'updated in' if existing else 'registered in'} "
+            f"{spec.display_name} (user scope){suffix}. {where} "
+            f"Restart {spec.display_name} to activate."
+        ),
+        backup_path=str(backup_path) if backup_path else None,
+        lens_mode=lens_mode,
+    )
+
+
+def _uninstall_json_host(
+    spec: HostSpec, config_path: Path, *, dry_run: bool = False
+) -> InstallResult:
+    """Remove the pmlens registration from a JSON-configured host (Cursor)."""
+    if not config_path.exists():
+        return InstallResult(
+            target=spec.host_id,
+            status="skipped",
+            message=f"{spec.config_label} not found — nothing to uninstall",
+            is_dry_run=dry_run,
+        )
+
+    try:
+        doc = _read_json_config(config_path)
+    except (ValueError, json.JSONDecodeError) as e:
+        return InstallResult(
+            target=spec.host_id,
+            status="failed",
+            message=(
+                f"{spec.config_label} is not valid JSON ({e}); refusing to "
+                "overwrite it. Fix or move the file, then re-run."
+            ),
+            is_dry_run=dry_run,
+        )
+
+    servers = doc.get(spec.mcp_key) or {}
+    if "pmlens" not in servers:
+        return InstallResult(
+            target=spec.host_id,
+            status="skipped",
+            message=f"PM Lens not registered in {spec.display_name}",
+            is_dry_run=dry_run,
+        )
+
+    entry = servers["pmlens"]
+    residual_keys = [k for k in entry if k not in _MANAGED_SERVER_KEYS]
+
+    if dry_run:
+        message = (
+            f"would unregister PM Lens from {spec.display_name}. "
+            f"Would back up to {spec.config_label}.bak.<ts> before write."
+            if not residual_keys
+            else (
+                f"would remove PM Lens managed fields from {spec.display_name}. "
+                "User-added keys would be preserved — remove manually if no longer needed. "
+                f"Would back up to {spec.config_label}.bak.<ts> before write."
+            )
+        )
+        return InstallResult(
+            target=spec.host_id,
+            status="uninstalled",
+            message=message,
+            backup_path=None,
+            is_dry_run=True,
+        )
+
+    backup_path = _timestamped_backup(config_path)
+    for key in _MANAGED_SERVER_KEYS:
+        entry.pop(key, None)
+
+    if not entry:
+        del servers["pmlens"]
+        if not servers:
+            doc.pop(spec.mcp_key, None)
+        message = f"PM Lens unregistered from {spec.display_name}. Backup at {backup_path}."
+    else:
+        message = (
+            f"PM Lens managed fields removed from {spec.display_name}. "
+            "User-added keys preserved — remove manually if no longer needed. "
+            f"Backup at {backup_path}."
+        )
+
+    _write_json_config(config_path, doc)
+
+    return InstallResult(
+        target=spec.host_id,
+        status="uninstalled",
+        message=message,
+        backup_path=str(backup_path),
+    )
+
+
+def install_cursor(*, dry_run: bool = False) -> InstallResult:
+    """Register pmlens as a Cursor MCP server (``~/.cursor/mcp.json``)."""
+    return _install_json_host(
+        HOSTS["cursor"], _cursor_config_path(), _cursor_config_dir(), dry_run=dry_run
+    )
+
+
+def uninstall_cursor(*, dry_run: bool = False) -> InstallResult:
+    """Remove the pmlens registration from Cursor's MCP config."""
+    return _uninstall_json_host(HOSTS["cursor"], _cursor_config_path(), dry_run=dry_run)
 
 
 # --- Orchestrator ---------------------------------------------------------
@@ -653,6 +977,51 @@ def _safe_call(fn: Callable[[], InstallResult], host: str) -> InstallResult:
         )
 
 
+#: host_id -> per-host (un)installer. Keyed off the same registry as
+#: ``_KNOWN_HOSTS``, and ``_dispatch`` fails loudly on a host missing from
+#: these tables. The previous if/elif chains had NO else, so a host added to
+#: the registry but not wired up produced zero results, no error, and an
+#: overall_status of "skipped" — a half-added host that looked like success.
+_INSTALLERS: dict[str, Callable[..., InstallResult]] = {
+    "claude-code": install_claude_code,
+    "codex": install_codex,
+    "cursor": install_cursor,
+    "grok": install_grok,
+}
+
+_UNINSTALLERS: dict[str, Callable[..., InstallResult]] = {
+    "claude-code": uninstall_claude_code,
+    "codex": uninstall_codex,
+    "cursor": uninstall_cursor,
+    "grok": uninstall_grok,
+}
+
+
+def _dispatch(
+    target: str, table: dict[str, Callable[..., InstallResult]], *, dry_run: bool
+) -> list[InstallResult]:
+    """Run every host in ``target`` through ``table``, isolating failures."""
+    results: list[InstallResult] = []
+    for host in _resolve_targets(target):
+        fn = table.get(host)
+        if fn is None:
+            results.append(
+                InstallResult(
+                    target=host,
+                    status="failed",
+                    message=(
+                        f"host {host!r} is in the host registry but has no "
+                        "installer wired up — this is a pmlens bug, not a "
+                        "configuration problem"
+                    ),
+                    is_dry_run=dry_run,
+                )
+            )
+            continue
+        results.append(_safe_call(lambda fn=fn: fn(dry_run=dry_run), host))
+    return results
+
+
 def install(target: str = "claude-code", *, dry_run: bool = False) -> InstallSummary:
     """Register pm-server with one or more host MCP clients.
 
@@ -668,13 +1037,7 @@ def install(target: str = "claude-code", *, dry_run: bool = False) -> InstallSum
     Returns:
         ``InstallSummary`` with one ``InstallResult`` per processed host.
     """
-    results: list[InstallResult] = []
-    for host in _resolve_targets(target):
-        if host == "claude-code":
-            results.append(_safe_call(lambda: install_claude_code(dry_run=dry_run), host))
-        elif host == "codex":
-            results.append(_safe_call(lambda: install_codex(dry_run=dry_run), host))
-    return InstallSummary(results=results)
+    return InstallSummary(results=_dispatch(target, _INSTALLERS, dry_run=dry_run))
 
 
 def uninstall(target: str = "claude-code", *, dry_run: bool = False) -> InstallSummary:
@@ -682,13 +1045,7 @@ def uninstall(target: str = "claude-code", *, dry_run: bool = False) -> InstallS
 
     Symmetric to :func:`install`. Same target and dry-run semantics.
     """
-    results: list[InstallResult] = []
-    for host in _resolve_targets(target):
-        if host == "claude-code":
-            results.append(_safe_call(lambda: uninstall_claude_code(dry_run=dry_run), host))
-        elif host == "codex":
-            results.append(_safe_call(lambda: uninstall_codex(dry_run=dry_run), host))
-    return InstallSummary(results=results)
+    return InstallSummary(results=_dispatch(target, _UNINSTALLERS, dry_run=dry_run))
 
 
 # --- Backward-compat wrappers (v0.4.x public API) -------------------------

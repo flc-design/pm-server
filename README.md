@@ -4,13 +4,13 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/pmlens.svg)](https://pypi.org/project/pmlens/)
 [![CI](https://github.com/flc-design/pmlens/actions/workflows/ci.yml/badge.svg)](https://github.com/flc-design/pmlens/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Multi-Host](https://img.shields.io/badge/multi--host-Claude%20Code%20%2B%20Codex%20CLI-success)](#multi-host-support-claude-code--codex-cli)
+[![Multi-Host](https://img.shields.io/badge/multi--host-Claude%20Code%20%2B%20Codex%20%2B%20Cursor%20%2B%20Grok-success)](#multi-host-support-claude-code--codex--cursor--grok-build)
 
 **[日本語版 README はこちら](README.ja.md)**
 
-**PM Lens for Claude Code + Codex CLI** — a project management MCP server that works across multiple AI coding assistants.
+**PM Lens for Claude Code, Codex CLI, Cursor and Grok Build** — a project management MCP server that works across multiple AI coding assistants.
 
-Track tasks, visualize progress, record decisions — through natural language in your Claude Code _or_ Codex CLI session. One PM substrate, multiple hosts.
+Track tasks, visualize progress, record decisions — through natural language in whichever host you happen to be in. One PM substrate, multiple hosts.
 
 ```
 > 進捗は？
@@ -35,7 +35,7 @@ Track tasks, visualize progress, record decisions — through natural language i
 
 ## Features
 
-- **🔌 Multi-host first** — registers in **Claude Code AND Codex CLI** with one command (`pmlens install --target=auto`). Project rules sync to both `CLAUDE.md` and `AGENTS.md` automatically (ADR-008). Switch hosts mid-project without losing context — same `.pm/` data, same workflows
+- **🔌 Multi-host first** — registers in **Claude Code, Codex CLI, Cursor and Grok Build** with one command (`pmlens install --target=auto`). Project rules sync to `CLAUDE.md` and `AGENTS.md` automatically (ADR-008). Switch hosts mid-project without losing context — same `.pm/` data, same workflows
 - **44 MCP tools** — task CRUD, child issues, status, blockers, velocity, dashboard, prompt packs, ADR, session memory, workflows, knowledge records, multi-host rules injection, cross-host outbox bridge, build-in-public X drafts, and more
 - **Workflow engine** — template-based development workflows with loops, user gates, and chaining (Discovery → Development)
 - **Knowledge records** — structured findings between casual memory and formal ADR (research, tradeoff, spec, etc.)
@@ -131,12 +131,32 @@ PM Lens automatically detects project info from `package.json`, `pyproject.toml`
 
 ---
 
-## Multi-Host Support (Claude Code + Codex CLI)
+## Multi-Host Support (Claude Code + Codex + Cursor + Grok Build)
 
-PM Lens v0.5.0 supports two MCP **hosts** — Claude Code (`~/.claude/`) and
-Codex CLI (`~/.codex/config.toml`) — as registration targets. The two hosts
-keep MCP configuration in completely separate stores, so a single install
-must reach both when needed.
+PM Lens registers as an MCP server in four **hosts**, each of which keeps its
+MCP configuration in a completely separate store:
+
+| Host          | MCP registration          | Format                       | Rule file    |
+| ------------- | ------------------------- | ---------------------------- | ------------ |
+| Claude Code   | `claude mcp add` (user)   | —                            | `CLAUDE.md`  |
+| Codex CLI     | `~/.codex/config.toml`    | TOML `[mcp_servers.pmlens]`  | `AGENTS.md`  |
+| Cursor        | `~/.cursor/mcp.json`      | JSON `"mcpServers"`          | `AGENTS.md`  |
+| Grok Build    | `~/.grok/config.toml`     | TOML `[mcp_servers.pmlens]`  | `AGENTS.md`  |
+
+Three of the four read `AGENTS.md`, so rule injection is keyed on the rule
+**file**, not the host: `--target all` writes `AGENTS.md` exactly once and
+reports which hosts read it.
+
+> **Grok Build note.** Grok Build already reads Claude Code's and Cursor's MCP
+> configs as *compatibility* sources, so if you installed PM Lens for Claude
+> Code it very likely works in Grok already. Registering natively still helps:
+> the compatibility scan is opt-out (`[compat.claude] mcps = false`) and is
+> merged at lower priority than `~/.grok/config.toml`.
+>
+> Grok Build also loads **every** recognised rule file in a directory — both
+> `AGENTS.md` and `CLAUDE.md`. In a project managed for Claude Code *and*
+> Codex it therefore sees the PM rules twice. Neither file can be dropped, so
+> `pm_status` reports this in `warnings[]` rather than "fixing" it.
 
 ### `--target` flag
 
@@ -147,10 +167,12 @@ Claude Code, exactly as in v0.4.x.
 
 | `--target`      | Behavior                                                                    |
 | --------------- | --------------------------------------------------------------------------- |
-| `claude-code`   | (default) Register in Claude Code only. `~/.codex/config.toml` is never opened. |
+| `claude-code`   | (default) Register in Claude Code only. No other host's config is opened.    |
 | `codex`         | Register in Codex CLI only. `~/.claude/` is never touched.                   |
-| `auto`          | Detect via filesystem (`~/.codex/config.toml` exists?) — register in detected hosts only. |
-| `all`           | Force every known host. Creates `~/.codex/config.toml` if absent.            |
+| `cursor`        | Register in Cursor only (`~/.cursor/mcp.json`, created if `~/.cursor` exists). |
+| `grok`          | Register in Grok Build only (`~/.grok/config.toml`).                        |
+| `auto`          | Detect installed hosts by their config paths — register in those only.      |
+| `all`           | Attempt every known host; hosts that are not installed report `skipped`.    |
 
 The companion command `pmlens update-rules` (introduced in v0.5.0 alongside
 this feature) defaults to `--target auto` because it is a brand-new command
@@ -167,9 +189,12 @@ with no v0.4.x baseline to preserve.
 - **Dry-run**: `--dry-run` prints the planned actions per host without
   writing anything. The output prefixes each line with `[dry-run]`.
 - **Per-host isolation**: a failure in one host (e.g. Codex CLI not
-  installed when `--target=all`) does not abort the other host; the
+  installed when `--target=all`) does not abort the others; the
   outcome is reported per host with status `installed` / `already_registered`
-  / `skipped` / `failed`.
+  / `skipped` / `failed`. Registering with one host leaves every other host's
+  config **byte-identical** — asserted by `tests/test_hosts.py`.
+- **Never clobbers what it cannot read**: a malformed `~/.cursor/mcp.json` is
+  reported as `failed` and left exactly as found, never rewritten.
 
 ### Quick examples
 
@@ -202,6 +227,8 @@ into the appropriate per-host instruction file:
 | ------------- | ---------------- |
 | Claude Code   | `CLAUDE.md`      |
 | Codex CLI     | `AGENTS.md`      |
+| Cursor        | `AGENTS.md`      |
+| Grok Build    | `AGENTS.md`      |
 
 The rules section is bracketed by `<!-- pm-server:begin v=N -->` /
 `<!-- pm-server:end -->` markers and updated **in place** — user content
@@ -613,7 +640,7 @@ PM Lens automatically installs Claude Code hooks at first session start (`pm_sta
 
 ```bash
 pmlens install             # Register MCP server (default: Claude Code only — back-compat).
-                           # Pass --target {auto,all,claude-code,codex} for multi-host.
+                           # Pass --target {auto,all,claude-code,codex,cursor,grok} for multi-host.
                            # Pass --dry-run to preview without writing. See "Multi-Host Support" below.
 pmlens uninstall           # Symmetric to install (same --target / --dry-run semantics).
 pmlens serve               # Start MCP server (called by Claude Code automatically)
@@ -625,7 +652,7 @@ pmlens prompt-pack         # Export backlog tasks as a paste-ready prompt pack (
                            # --group-by {none,phase,track} / --out / --project
 pmlens migrate             # Migrate from pm-agent (rename transition)
 pmlens update-rules        # Inject PM Lens rules into CLAUDE.md and/or AGENTS.md (ADR-008).
-                           # --target {auto,all,claude-code,codex} (default: auto)
+                           # --target {auto,all,claude-code,codex,cursor,grok} (default: auto)
                            # --dry-run / --all (apply to every registered project)
 pmlens update-claudemd     # Legacy alias of `update-rules --target=claude-code`. Deprecated since v0.6.0.
 pmlens install-hooks       # Manually install Claude Code hooks (auto-installed via pm_status)

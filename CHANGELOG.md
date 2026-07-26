@@ -2,6 +2,78 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Cursor and Grok Build are supported hosts (PMSERV-165)**: `--target` /
+  `target=` now accept `cursor` and `grok` alongside `claude-code` and `codex`.
+  Cursor registers into `~/.cursor/mcp.json` (`{"mcpServers": …}`, with the
+  `"type": "stdio"` field Cursor documents as required); Grok Build registers
+  into `~/.grok/config.toml`, whose `[mcp_servers.pmlens]` shape is identical to
+  Codex's, so one implementation serves both. Both read `AGENTS.md`.
+
+  Host identity moved out of six unsynchronised literals and two `if/elif`
+  dispatch chains into a single registry, `pmlens.hosts.HOSTS`. Those chains had
+  no `else`: a host wired into some places and not others produced zero results,
+  no error, and an `overall_status` of `"skipped"` — a half-added host that read
+  as success. Dispatch is now table-driven and an unwired host fails loudly.
+
+  Three hosts share `AGENTS.md`, so rule injection deduplicates by **file**
+  rather than host: `target="all"` writes it once and reports
+  `results[].hosts == ["codex", "cursor", "grok"]`. Iterating hosts would have
+  backed up and rewritten one file three times, with the second and third
+  reporting "already current" because the first had just written it.
+
+  **Grok Build caveats, both verified against the docs Grok ships locally.**
+  It already reads Claude Code's and Cursor's MCP configs as compatibility
+  sources, so a Claude-Code install often works in Grok with no action —
+  registering natively matters because that scan is opt-out and merged at lower
+  priority. And it loads *every* recognised rule file in a directory, so a
+  project managed for both Claude Code and Codex feeds it the PM rules twice;
+  `pm_status` and `pm_update_rules` report that in `warnings[]` rather than
+  deleting a file that another host requires.
+
+- **Release version-lockstep guard covers the whole release surface
+  (PMSERV-172)**: `tests/test_version_lockstep.py` replaces the seven scattered
+  lockstep assertions with one registry plus a scoped reverse scan. Eight live
+  values had no guard (`uv.lock`, both cheatsheets, `docs/README.md`, three
+  stamps in `docs/architecture.html`, and `plugin/README.md`'s bare
+  `latest 0.13.0` — which sat *inside* a file the guards already covered, since
+  the regex was anchored on `pm-server@`). Text surfaces now assert an exact pin
+  *count*, and the reverse layer flags any version-shaped string in a
+  release-surface file that is neither the current version nor a suppression
+  carrying a written reason.
+
+### Changed
+
+- **Rule template v11 → v12 (PMSERV-165)**: self-references no longer name
+  `CLAUDE.md` (three hosts receive the same text inside `AGENTS.md`), and the
+  ADR-028 branch-continuity clause is corrected — it said "hosts without hooks"
+  when Cursor and Grok Build both *have* session hooks; what they lack is a
+  pmlens-installed one. Existing `CLAUDE.md` / `AGENTS.md` files are re-injected
+  on the next `pm_update_rules`.
+- **`pm_status` gained a `warnings[]` key**, and `pm_update_rules` results gained
+  a `hosts` field naming every host that reads the written file. `host` still
+  carries the single owning host.
+
+### Fixed
+
+- **A tag push no longer half-releases in silence (PMSERV-173)**: `v*` fires two
+  workflows, each with its own manual approval, and approving only one shipped a
+  version whose committed `uvx pm-server@X.Y.Z` plugin pin could not resolve —
+  with no job red anywhere, since `skip-existing: true` means a green publish job
+  is not evidence anything was uploaded. Approving the *wrapper* first was worse:
+  it publishes a metapackage requiring a `pmlens` that may never exist, and PyPI
+  never allows re-uploading a filename. Both orderings now fail loudly via
+  reciprocal PyPI presence gates, the two approvals are named "approval 1 of 2" /
+  "2 of 2", and `docs/RELEASING.md` documents the procedure that was previously
+  recorded nowhere.
+- **The test suite can no longer edit the developer's real editor configs**: it
+  now runs with `$HOME` pointed at a per-test sandbox, plus a detection guard
+  that fails any test which disturbs a real host config or leaves a pmlens
+  backup beside one. Found the hard way — an installer refactor resolved its
+  config path around the seam the fixtures patched and a plain `pytest` wrote
+  into the real `~/.grok` and `~/.cursor`.
+
 ## [0.13.0] - 2026-07-25
 
 Auto-memory becomes searchable across projects, and two irreversible memory

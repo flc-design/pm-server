@@ -612,6 +612,10 @@ class TestPmUpdateRules:
         per_result_keys = {
             "target_file",
             "host",
+            # PMSERV-165: several hosts read one rule file, so results are per
+            # FILE. `host` stays the single owning host for backward
+            # compatibility; `hosts` names every reader.
+            "hosts",
             "status",
             "message",
             "backup_path",
