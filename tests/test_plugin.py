@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -34,7 +32,6 @@ POST_HOOK = PLUGIN_DIR / "hooks" / "post-tool-use.sh"
 SESSION_HOOK = PLUGIN_DIR / "hooks" / "session-start.sh"
 PLUGIN_MCP = PLUGIN_DIR / ".mcp.json"
 PLUGIN_README = PLUGIN_DIR / "README.md"
-PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 _COMMIT_INPUT = '{"tool_input":{"command":"git commit -m \\"msg\\""},"cwd":"/tmp"}'
 
@@ -184,84 +181,16 @@ def test_directive_emitted_without_jq(empty_config: Path):
     assert "hookSpecificOutput" not in r.stdout
 
 
-# ─── Plugin version drift guard (PMSERV-133) ──────────────────────────────────
+# ─── Plugin version drift guard — MOVED (PMSERV-133 → PMSERV-172) ─────────────
 #
-# The plugin pins pm-server's version across FOUR surfaces that must all move in
-# lockstep with pyproject.toml on every release. The v0.10.0 release skew — a
-# plugin pin lagging main by many commits — is what motivated this guard: a
-# missed surface now fails loudly here instead of silently shipping a stale
-# plugin. Mirrors the lockstep-assertion style of test_manifest.py.
-
-
-def _pyproject_version() -> str:
-    """Single source of truth: pyproject.toml [project].version."""
-    with PYPROJECT.open("rb") as f:
-        return tomllib.load(f)["project"]["version"]
-
-
-class TestPluginVersionSync:
-    """Every plugin version surface must equal the pyproject version."""
-
-    def test_plugin_manifest_version_matches_pyproject(self):
-        assert _load(PLUGIN_MANIFEST)["version"] == _pyproject_version(), (
-            "plugin/.claude-plugin/plugin.json version drifted from pyproject.toml; "
-            "bump in lockstep across all plugin version surfaces (PMSERV-133)"
-        )
-
-    def test_marketplace_metadata_version_matches_pyproject(self):
-        # The version lives under metadata.version; plugins[0] has no version key.
-        assert _load(MARKETPLACE)["metadata"]["version"] == _pyproject_version(), (
-            ".claude-plugin/marketplace.json metadata.version drifted from "
-            "pyproject.toml; bump in lockstep (PMSERV-133)"
-        )
-
-    def test_mcp_uvx_pin_matches_pyproject(self):
-        ver = _pyproject_version()
-        pin = _load(PLUGIN_MCP)["mcpServers"]["pmlens"]["args"][0]
-        m = re.fullmatch(r"pm-server@(.+)", pin)
-        assert m is not None, f"plugin/.mcp.json uvx pin malformed: {pin!r}"
-        assert m.group(1) == ver, (
-            f"plugin/.mcp.json pins {pin!r}; expected 'pm-server@{ver}' — the uvx "
-            "pin drifted from pyproject.toml (PMSERV-133)"
-        )
-
-    def test_plugin_readme_pins_match_pyproject(self):
-        ver = _pyproject_version()
-        text = PLUGIN_README.read_text(encoding="utf-8")
-        # The load-bearing committed release pin, e.g. `uvx pm-server@0.10.0`.
-        assert f"pm-server@{ver}" in text, (
-            f"plugin/README.md is missing the release pin 'pm-server@{ver}'; its "
-            "documented uvx pin drifted from pyproject.toml (PMSERV-133)"
-        )
-        # Every CONCRETE version pin must match (also catches the `pm-server>=x.y.z`
-        # floor example); the generic `pm-server@x.y` placeholder carries no
-        # numeric version and is correctly ignored by the \d+\.\d+\.\d+ anchor.
-        pinned = re.findall(r"pm-server[@>=]+(\d+\.\d+\.\d+)", text)
-        assert pinned, "expected at least one concrete pm-server version pin in README"
-        assert all(p == ver for p in pinned), (
-            f"plugin/README.md has version pins {sorted(set(pinned))} disagreeing "
-            f"with pyproject {ver}; bump all in lockstep (PMSERV-133)"
-        )
-
-    def test_wrapper_metapackage_version_matches_pyproject(self):
-        """The pm-server compat wrapper must move in lockstep with pyproject.
-
-        This was the one version pin the sync guards did not cover: the
-        v0.12.1 tag rebuilt the wrapper at its committed 0.12.0 and PyPI
-        rejected the upload with '400 File already exists', leaving the
-        plugin's fresh `uvx pm-server@0.12.1` pin unresolvable until a
-        manual wrapper re-release. The dependency floor must also track the
-        same version so the wrapper installs the matching pmlens.
-        """
-        ver = _pyproject_version()
-        wrapper = (REPO_ROOT / "packaging" / "pm-server-wrapper" / "pyproject.toml").read_text(
-            encoding="utf-8"
-        )
-        assert f'version = "{ver}"' in wrapper, (
-            f"packaging/pm-server-wrapper/pyproject.toml is not at {ver}; the "
-            "wrapper metapackage drifted from pyproject.toml"
-        )
-        assert f'dependencies = ["pmlens>={ver}"]' in wrapper, (
-            f"wrapper dependency floor must be pmlens>={ver} so "
-            f"`uvx pm-server@{ver}` installs the matching pmlens"
-        )
+# The plugin pins pm-server's version across several surfaces that must all move
+# in lockstep with pyproject.toml on every release. Two incidents shaped that
+# guard: the v0.10.0 release skew (a plugin pin lagging main by many commits) and
+# the v0.12.1 wrapper miss (PyPI rejected the rebuild with '400 File already
+# exists', leaving the plugin's fresh `uvx pm-server@0.12.1` pin unresolvable).
+#
+# PMSERV-172 found the guard set itself incomplete — notably plugin/README.md's
+# bare `latest 0.13.0` line, which the `pm-server@…`-anchored regex could never
+# see, i.e. a *guarded file* with an *unguarded line*. All of it now lives in
+# tests/test_version_lockstep.py, which additionally scans the whole release
+# surface for unregistered pins. Do not re-add lockstep assertions here.

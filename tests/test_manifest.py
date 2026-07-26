@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tomllib
 import zipfile
 from pathlib import Path
 
@@ -22,7 +21,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = REPO_ROOT / "manifest.json"
-PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 MCPBIGNORE_PATH = REPO_ROOT / ".mcpbignore"
 
 
@@ -30,38 +28,18 @@ def _load_manifest() -> dict:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
-def _load_pyproject_version() -> str:
-    with open(PYPROJECT_PATH, "rb") as f:
-        return tomllib.load(f)["project"]["version"]
-
-
 class TestManifestShape:
+    # The manifest.json ↔ pyproject and __init__.py ↔ pyproject lockstep
+    # assertions that used to live here moved to tests/test_version_lockstep.py
+    # (PMSERV-172), which owns every release version surface in one registry and
+    # additionally scans for unregistered pins. `manifest_version` below is the
+    # MCPB *spec* version — unrelated to our release version, and it stays here.
+
     def test_manifest_is_valid_json(self):
         _load_manifest()
 
     def test_manifest_version_is_v04(self):
         assert _load_manifest()["manifest_version"] == "0.4"
-
-    def test_version_matches_pyproject(self):
-        manifest = _load_manifest()
-        assert manifest["version"] == _load_pyproject_version(), (
-            "manifest.json version must move in lockstep with pyproject.toml"
-        )
-
-    def test_init_version_matches_pyproject(self):
-        # PMSERV-106 follow-up: src/pmlens/__init__.py:__version__ is what
-        # `pm-server --version` prints to users — silently drifting from
-        # pyproject (as it did between 0.6.2 and 0.8.0) is a release-quality
-        # bug, even if functionally cosmetic.
-        import re
-
-        init_text = (REPO_ROOT / "src" / "pmlens" / "__init__.py").read_text(encoding="utf-8")
-        match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
-        assert match is not None, "src/pmlens/__init__.py is missing __version__"
-        assert match.group(1) == _load_pyproject_version(), (
-            f"__init__.py __version__ ({match.group(1)!r}) drifted from "
-            f"pyproject.toml ({_load_pyproject_version()!r}); bump in lockstep"
-        )
 
     def test_server_type_is_uv(self):
         assert _load_manifest()["server"]["type"] == "uv"
