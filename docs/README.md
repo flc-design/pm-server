@@ -20,6 +20,7 @@ PM Lens の各種ドキュメント。読者層と用途で 3 つの HTML ガイ
 - **[workflow-guide.html](./workflow-guide.html)** — Workflow Guide（5 builtin templates 詳解 (incl. brainstorming, content-pipeline)・YAML schema・カスタム作成方法）
 
 ### 補助ドキュメント
+- [RELEASING.md](./RELEASING.md) — リリース runbook（版数サーフェスの pre-flight・**承認が2回必要**・各ゲートが赤い時の意味・復旧手順・PyPI trusted publisher）
 - [cheatsheet.md](./cheatsheet.md) / [cheatsheet.ja.md](./cheatsheet.ja.md) — MCP ツール簡潔リファレンス（quick lookup 用）
 - [design.md](./design.md) — 詳細設計書（アーキテクチャ・データモデル・MCP API 一覧）
 - [workflow.md](./workflow.md) — Claude Code 開発ワークフロー（プロセス論）

@@ -8,6 +8,14 @@ on:
 permissions:
   contents: read
 
+# Never cancel a run that may already have uploaded to PyPI — a re-tagged
+# correction must queue behind its predecessor, not race it. Grouping per
+# workflow+ref also keeps a mistaken-then-corrected tag pair from stacking up
+# four indistinguishable approval prompts across the two release workflows.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     # Gate the irreversible publish on the TAGGED commit (2026-07-25). Two gaps
@@ -91,7 +99,11 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish to PyPI (Trusted Publisher)
+    # A v* tag fires TWO workflows, each with its own `pypi` environment gate,
+    # and both jobs used to be called "Publish … to PyPI (Trusted Publisher)".
+    # Two identically-named prompts is how a maintainer approves one and walks
+    # away. The names now say which is which, and in which order (PMSERV-173).
+    name: Publish pmlens to PyPI (approval 1 of 2)
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -159,6 +171,37 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
+
+      # The Release page is the announcement. Do not announce a version whose
+      # committed plugin pin cannot resolve. `publish-wrapper.yml` runs as a
+      # SEPARATE workflow with its own approval, so approving only this one
+      # publishes pmlens, creates a `--latest` Release, and leaves
+      # `uvx pm-server@X.Y.Z` (plugin/.mcp.json) unresolvable for every plugin
+      # user — with no job red anywhere. This turns that into a loud failure
+      # (PMSERV-173).
+      - name: Require the pm-server wrapper on PyPI before announcing
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"; version="${version%%-*}"
+          url="https://pypi.org/pypi/pm-server/${version}/json"
+          # 10 attempts, backoff 15s..150s => ~13.75 min. PyPI index propagation
+          # is normally well under a minute; the budget is sized for a human
+          # approving the second run a few minutes late, not for the CDN.
+          for attempt in $(seq 1 10); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+                      --max-time 20 --retry 2 --retry-connrefused \
+                      -H 'Accept: application/json' "$url" || echo 000)"
+            if [ "$code" = "200" ]; then
+              echo "pm-server ${version} is on PyPI (attempt ${attempt})"
+              exit 0
+            fi
+            echo "attempt ${attempt}: HTTP ${code} for ${url}"
+            sleep $((attempt * 15))
+          done
+          echo "::error::pm-server ${version} is not on PyPI after ~14 minutes. The wrapper run ('Release wrapper (pm-server) to PyPI') is probably still awaiting its own environment approval — approve it, then re-run this job. See docs/RELEASING.md."
+          exit 1
 
       - name: Download .mcpb bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1

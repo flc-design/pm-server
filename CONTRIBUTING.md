@@ -83,7 +83,20 @@ to reset the sandbox HOME between experiments.
   `docker-dev` skill / `pmlens-docker-dev` agent walk through sandbox → change →
   test → exercise side-effects → verify isolation → promote.
 
-## Releasing the host tool
+## Cutting a release
+
+**[docs/RELEASING.md](docs/RELEASING.md)** is the runbook: the pre-flight
+version-surface checklist, what each pipeline gate means when it goes red, the
+recovery paths, and the PyPI trusted-publisher bindings.
+
+The part nobody guesses: a `vX.Y.Z` tag starts **two** GitHub Actions runs —
+`pmlens` and the `pm-server` compatibility wrapper — each requiring its **own**
+manual approval in the `pypi` environment. **Approve "Release to PyPI"
+(approval 1 of 2) first.** Approving only one publishes a version whose
+committed plugin pin cannot resolve; since PMSERV-173 that fails loudly rather
+than silently, but the ordering is still yours to get right.
+
+## Upgrading the host tool
 
 When a change must reach the host's stable pmlens, do it **deliberately and
 separately** from the dev container: `pipx upgrade pmlens` (after the release is

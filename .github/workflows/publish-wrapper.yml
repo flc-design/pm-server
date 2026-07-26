@@ -28,10 +28,20 @@ on:
 permissions:
   contents: read
 
+# See release.yml: never cancel a run that may already have uploaded to PyPI.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build wrapper distributions
     runs-on: ubuntu-latest
+    outputs:
+      # Read from the wrapper's own pyproject rather than the tag, so the
+      # ordering gate in `publish` also works on a workflow_dispatch backfill,
+      # where ref_name is a branch and carries no version.
+      version: ${{ steps.wrapper_version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -65,6 +75,14 @@ jobs:
           fi
           echo "tag $TAG matches wrapper $actual"
 
+      - name: Read the wrapper version
+        id: wrapper_version
+        run: |
+          set -euo pipefail
+          v="$(python -c 'import tomllib;print(tomllib.load(open("packaging/pm-server-wrapper/pyproject.toml","rb"))["project"]["version"])')"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "wrapper version: $v"
+
       - name: Build wrapper sdist + wheel
         run: python -m build packaging/pm-server-wrapper --outdir wrapper-dist
 
@@ -83,7 +101,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish wrapper to PyPI (Trusted Publisher)
+    # Named to pair with release.yml's "approval 1 of 2" — see PMSERV-173.
+    name: Publish pm-server wrapper to PyPI (approval 2 of 2)
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -93,6 +112,32 @@ jobs:
       id-token: write       # OIDC required for PyPI Trusted Publisher
       attestations: write   # PEP 740 provenance attestation
     steps:
+      # The inverse half of the gate in release.yml, and the one that closes a
+      # PERMANENT window rather than a recoverable one. This wrapper declares
+      # `pmlens>=X.Y.Z`; publishing it before pmlens X.Y.Z exists leaves
+      # `uvx pm-server@X.Y.Z` unresolvable, and if the pmlens run's `verify`
+      # then fails, the release can never be completed at that version — PyPI
+      # does not allow re-uploading a filename. So: pmlens first, always.
+      - name: Require pmlens on PyPI before publishing the wrapper
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://pypi.org/pypi/pmlens/${VERSION}/json"
+          for attempt in $(seq 1 10); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+                      --max-time 20 --retry 2 --retry-connrefused \
+                      -H 'Accept: application/json' "$url" || echo 000)"
+            if [ "$code" = "200" ]; then
+              echo "pmlens ${VERSION} is on PyPI (attempt ${attempt})"
+              exit 0
+            fi
+            echo "attempt ${attempt}: HTTP ${code} for ${url}"
+            sleep $((attempt * 15))
+          done
+          echo "::error::pmlens ${VERSION} is not on PyPI after ~14 minutes. Approve 'Release to PyPI' (approval 1 of 2) FIRST, then re-run this job. Publishing this wrapper now would ship a metapackage whose pmlens>=${VERSION} floor cannot resolve. See docs/RELEASING.md."
+          exit 1
+
       - name: Download distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:

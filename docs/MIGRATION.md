@@ -9,6 +9,16 @@ cites it.
 > refresh 2026-06-22 ran an 8-agent recon against live code (verdict
 > `ready_with_fixes`); the 2026-06-19 revisions carried stale line numbers/counts.
 
+> **Superseded in two places — the historical text below is kept as written.**
+> (1) *Release procedure*: this document describes the `pypi` environment
+> approval as "the sole one-way door" and the wrapper publish as a manual step
+> taken "within hours". Both were true when written and are no longer: the
+> wrapper has its own automated workflow with its own **second** approval, and
+> both orderings are now gated. **[RELEASING.md](./RELEASING.md) is the current
+> runbook.** (2) *Version guards*: the `tests/test_plugin.py::TestPluginVersionSync`
+> guards cited below were consolidated into `tests/test_version_lockstep.py`
+> (PMSERV-172), which covers every release surface rather than the plugin's four.
+
 ---
 
 ## Status
