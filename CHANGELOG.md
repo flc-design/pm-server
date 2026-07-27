@@ -1,6 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.0] - 2026-07-27
+
+Cursor and Grok Build join Claude Code and Codex as supported hosts, and memory
+search stops answering with a bare zero — a query that matches nothing now says
+which of its terms were the problem. The release pipeline gains the two guards
+that would have caught this release's own predecessors: every version pin on the
+release surface is now registered and reverse-scanned, and a tag push that gets
+only one of its two approvals fails loudly instead of shipping an unresolvable
+plugin pin. MCP tool count: 44 (unchanged). Test suite: 1,491 passing.
+ADR-047, ADR-048, ADR-049, ADR-050.
 
 ### Added
 
