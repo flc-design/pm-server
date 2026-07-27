@@ -1210,7 +1210,14 @@ def pm_recall(
     """Recall memories relevant to the current context.
 
     With no arguments: returns last session summary + recent memories.
-    With query: full-text search (FTS5).
+    With query: full-text search (FTS5 + LIKE fallback). Prefer ONE short
+        keyword — a multi-word or natural-language query returns 0 rows
+        because ``unicode61`` does not segment CJK and the LIKE fallback
+        matches the whole query as a single literal substring rather than
+        AND-ing the terms. ``search_strategy`` reports which path ran; a
+        "like_fallback" with 0 results usually means the query was too long,
+        not that nothing is stored. See ``pm_memory_search`` for the full
+        mechanics and ``docs/reports/ja-fts-baseline.md`` for measured rates.
     With task_id: memories linked to that task.
     type filter: observation | insight | lesson
     cross_project: search across all projects (Phase 3).
@@ -1527,7 +1534,22 @@ def pm_memory_search(
 ) -> dict:
     """Advanced memory search with multiple filters.
 
-    query: Full-text search query (required).
+    query: Full-text search query (required). Prefer ONE short keyword per
+        call; long natural-language phrases reliably return 0 rows. Two
+        mechanics compound: (1) FTS5 uses ``tokenize='unicode61'``, which does
+        not segment CJK — a whole run between punctuation/ASCII is ONE token,
+        so "ホスティング形態" never MATCHes inside "…でもホスティング形態で…"
+        (quoting it as a phrase does not help; it is a substring of a token,
+        not a token); (2) when MATCH finds nothing, the LIKE fallback matches
+        the ENTIRE query as a single literal substring — it is NOT a
+        term-by-term AND — so a multi-word query hits only if those words
+        appear verbatim and adjacent in the stored text. Search one keyword at
+        a time and narrow with ``tags``/``task_id`` instead. ``search_strategy``
+        in the response reports which path ran ("fts" | "like_fallback"); a
+        "like_fallback" with 0 results usually means the query was too long,
+        NOT that nothing relevant is stored — retry with a single term before
+        concluding the memory is absent. Measured baseline:
+        ``docs/reports/ja-fts-baseline.md``.
     type: Filter by memory type (observation | insight | lesson).
     tags: Comma-separated tags for AND filtering.
     task_id: Filter by associated task.

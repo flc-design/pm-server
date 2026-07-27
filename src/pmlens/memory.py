@@ -568,7 +568,14 @@ class MemoryStore:
         When the FTS5 MATCH query returns zero rows, this falls back to a
         plain substring scan (``content LIKE ? OR tags LIKE ?``, with ``%``
         and ``_`` escaped) so those queries still surface something instead of
-        a hard empty result. This is a recall safety net, not a tokenizer fix
+        a hard empty result. Note the exact semantics, because they are
+        stricter than callers assume: the ENTIRE query string becomes ONE
+        literal pattern — terms are never split and never AND-ed — so the
+        fallback rescues single-keyword queries only. A multi-word query hits
+        only when those words appear verbatim AND adjacent in the stored text,
+        which is why e.g. "egress ホスティング形態" returns 0 rows even though
+        both terms live in the same row (stored as "…ホスティング形態でegress…").
+        This is a recall safety net, not a tokenizer fix
         — trigram tokenizer migration is intentionally out of scope here (see
         ADR-039 AD-8) and tracked as a separate future issue.
 
