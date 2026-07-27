@@ -59,13 +59,35 @@ below repeats that number and must move in the same commit.
 
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z — one-line title" -m "Body that becomes the release notes."
-   git push origin main --follow-tags
+   git push origin main
+   git push origin vX.Y.Z          # name the tag — see the warning below
    ```
 
    A **lightweight** tag is detected and falls back to a CHANGELOG pointer —
    without that detection, `git tag --format=%(contents:*)` silently resolves to
    the *commit* message and would publish its `Co-Authored-By` trailers as your
    public release notes.
+
+   > **Push the tag by name. Do not use `--follow-tags` or `--tags`.**
+   > The trigger is `push: tags: 'v*'`, so *every* tag that lands on the remote
+   > starts a release run — including ones you did not mean to send.
+   > `--follow-tags` sweeps up every unpushed **annotated** tag reachable from
+   > the commit, and `--tags` sweeps up lightweight ones too. Releasing 0.14.0
+   > this way also pushed a stale local `v0.8.0`, which immediately started a
+   > second "Release to PyPI" run for a version that was never published.
+   >
+   > Nothing shipped — the approval gate held it at the `pypi` environment and
+   > the run was cancelled before anyone approved it — but that was the gate
+   > doing a job it was not designed for. Do not rely on it: an old tag whose
+   > `pyproject.toml` version matches its own name passes `verify` and reaches
+   > the approval prompt looking exactly like the release you meant to make.
+   >
+   > Check before pushing. Anything listed here would be sent by `--follow-tags`:
+   >
+   > ```bash
+   > comm -23 <(git tag | sort) \
+   >          <(git ls-remote --tags origin | sed 's|.*refs/tags/||; s|\^{}||' | sort -u)
+   > ```
 
 ---
 
