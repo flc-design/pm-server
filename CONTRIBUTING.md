@@ -89,12 +89,16 @@ to reset the sandbox HOME between experiments.
 version-surface checklist, what each pipeline gate means when it goes red, the
 recovery paths, and the PyPI trusted-publisher bindings.
 
-The part nobody guesses: a `vX.Y.Z` tag starts **two** GitHub Actions runs —
-`pmlens` and the `pm-server` compatibility wrapper — each requiring its **own**
-manual approval in the `pypi` environment. **Approve "Release to PyPI"
-(approval 1 of 2) first.** Approving only one publishes a version whose
-committed plugin pin cannot resolve; since PMSERV-173 that fails loudly rather
-than silently, but the ordering is still yours to get right.
+The part nobody guesses: push the tag **by name**, not with `--follow-tags`.
+Every tag that reaches the remote matches the `v*` trigger and starts a release
+run, so `--follow-tags` — which also sends any unrelated stale annotated tags
+you happen to have locally — can start runs you did not ask for.
+
+The tag then stops at **one** manual approval in the `pypi` environment, which
+publishes `pmlens` and the `pm-server` compatibility wrapper together, in that
+order. Before PMSERV-174 it was two runs with two independent approvals, and
+approving only one published a version whose committed plugin pin could not
+resolve.
 
 ## Upgrading the host tool
 

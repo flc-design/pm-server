@@ -1,30 +1,37 @@
-"""Half-release guardrail for the two-workflow release pipeline (PMSERV-173).
+"""Half-release guardrail for the release pipeline (PMSERV-173, PMSERV-174).
 
-A `v*` tag fires TWO independent workflow runs — `release.yml` (publishes
-`pmlens`) and `publish-wrapper.yml` (publishes the `pm-server` compatibility
-metapackage) — and each stops at its own manual approval in the `pypi`
-environment. Until PMSERV-173 both approval prompts were named
-``Publish … to PyPI (Trusted Publisher)`` and neither run knew the other
-existed, so:
+A `v*` tag used to fire TWO independent workflow runs — `release.yml`
+(publishes `pmlens`) and `publish-wrapper.yml` (publishes the `pm-server`
+compatibility metapackage) — each stopping at its own manual approval in the
+`pypi` environment. Approving one and not the other shipped a half-release:
 
-* **approving only the first** published pmlens, attached the ``.mcpb`` and
-  created a ``--latest`` GitHub Release, while ``uvx pm-server@X.Y.Z`` — the pin
-  committed in ``plugin/.mcp.json`` — stayed unresolvable for every plugin user.
-  Nothing anywhere went red.
+* **approving only pmlens** published it, attached the ``.mcpb`` and created a
+  ``--latest`` GitHub Release, while ``uvx pm-server@X.Y.Z`` — the pin committed
+  in ``plugin/.mcp.json`` — stayed unresolvable for every plugin user. Nothing
+  anywhere went red.
 * **approving the wrapper first** published a metapackage requiring
   ``pmlens>=X.Y.Z`` before that pmlens existed. If the pmlens run's ``verify``
   then failed, the window was **permanent** — PyPI never allows re-uploading a
   filename.
 
-Both are now loud: each publish path polls PyPI for its counterpart and fails.
-``skip-existing: true`` on both uploads means a job's exit status is *not*
-evidence that anything was published, so these gates are the only mechanism that
-can distinguish "released" from "half-released".
+PMSERV-173 made both orderings loud. PMSERV-174 (ADR-050 Phase 3) removed the
+choice: one job now uploads pmlens and then the wrapper behind a **single**
+approval, so ordering is step order rather than a rule a human follows. The
+`v*` trigger was removed from ``publish-wrapper.yml``, which survives as the
+dispatch-only rollback path.
+
+Two properties therefore need locking, and they pull in opposite directions:
+the tag path must gate exactly **once** (or the two-approval hole is back under
+a new name), and within that one job pmlens must upload **before** the wrapper
+(or the permanent window reopens). Both are asserted below, along with the
+PyPI presence poll that still guards the announcement — ``skip-existing: true``
+means a green publish step is *not* evidence anything was uploaded, so asking
+PyPI directly remains the only way to tell "released" from "no-op'd".
 
 This file exists for the same reason ``test_workflow_pins.py`` does: without it,
-deleting a gate or renaming a job back to an ambiguous label leaves CI green and
-the regression only surfaces during a release, which is the worst possible time
-to find it.
+deleting a gate or splitting the publish back into two approvals leaves CI green
+and the regression only surfaces during a release, which is the worst possible
+time to find it.
 """
 
 from __future__ import annotations
@@ -80,39 +87,74 @@ def _environment_name(job: dict) -> str | None:
 # ─── The approvals must be distinguishable ────────────────────────────────────
 
 
-def test_exactly_two_jobs_gate_on_the_pypi_environment():
-    """A third publish path would mean a third approval nobody is told about."""
-    gated = [
+def _triggers(path: Path) -> dict:
+    """The `on:` block. PyYAML parses a bare ``on:`` key as the boolean True."""
+    wf = _load(path)
+    return wf.get("on") if "on" in wf else wf[True]
+
+
+def test_a_tag_push_requires_exactly_one_approval():
+    """The whole point of PMSERV-174. Two gated jobs on the tag path = the hole.
+
+    GitHub creates a pending deployment per JOB, so a second job on the `pypi`
+    environment is a second prompt — whether it lives in this workflow or
+    another one. Chaining it with ``needs:`` does not help; it makes the two
+    prompts sequential rather than batchable, which is strictly worse for the
+    maintainer who has to sit through both.
+    """
+    gated_on_tag_push = [
         f"{path.name}:{job_id}"
         for path in (RELEASE_YML, WRAPPER_YML)
         for job_id, job in _load(path)["jobs"].items()
-        if _environment_name(job) == "pypi"
+        if _environment_name(job) == "pypi" and "push" in _triggers(path)
     ]
-    assert sorted(gated) == ["publish-wrapper.yml:publish", "release.yml:publish"], (
-        f"jobs behind the `pypi` approval changed: {sorted(gated)}. Every one of "
-        "these is a separate manual approval a maintainer must click — update "
-        "docs/RELEASING.md §2 and the job names before changing this set."
+    assert gated_on_tag_push == ["release.yml:publish"], (
+        f"jobs requiring approval on a tag push: {sorted(gated_on_tag_push)}. "
+        "A v* tag must stop at exactly ONE approval (PMSERV-174 / ADR-050 "
+        "Phase 3). Adding a second returns the half-release hole PMSERV-173 "
+        "existed to close — update docs/RELEASING.md §2 and §6 first."
     )
 
 
-def test_publish_job_names_state_the_approval_order():
-    """Two identically-named prompts is how a maintainer approves one and stops.
+def test_wrapper_workflow_is_dispatch_only():
+    """The rollback path must not re-arm itself on a tag.
 
-    The names are load-bearing UI, not decoration: the Actions list is where the
-    ordering rule (pmlens before wrapper) is actually enforced, by a human.
+    ``publish-wrapper.yml`` is kept deliberately (docs/RELEASING.md §6 step 3:
+    do not delete the file) so a failed OIDC migration can be reverted by
+    restoring this trigger. Until then it must never fire from a tag, or the
+    single approval silently becomes two again.
     """
-    pmlens_name = _load(RELEASE_YML)["jobs"]["publish"]["name"]
-    wrapper_name = _load(WRAPPER_YML)["jobs"]["publish"]["name"]
+    triggers = _triggers(WRAPPER_YML)
+    assert "workflow_dispatch" in triggers, (
+        "publish-wrapper.yml lost its workflow_dispatch trigger; it is the "
+        "manual recovery/backfill path and must stay runnable"
+    )
+    assert "push" not in triggers, (
+        "publish-wrapper.yml fires on a push again. A v* tag would then start a "
+        "second approval-gated run alongside release.yml's, which is exactly "
+        "the two-approval state PMSERV-174 removed."
+    )
 
-    assert "1 of 2" in pmlens_name, (
-        f"release.yml publish job is named {pmlens_name!r}; it must say it is the "
-        "FIRST of two approvals (PMSERV-173)"
+
+def test_both_version_assertions_run_before_the_approval():
+    """A stale wrapper version must fail while stopping is still free.
+
+    Once the single approval is granted, pmlens uploads immediately — after
+    that, "the wrapper is stale" can no longer be fixed at this version, since
+    PyPI filenames are immutable. So both tag-vs-version checks belong in
+    `verify`, which runs before anything is gated.
+    """
+    verify = _load(RELEASE_YML)["jobs"]["verify"]
+    blob = "\n".join(f"{s.get('name', '')}\n{s.get('run', '')}" for s in _steps(verify))
+
+    assert 'tomllib.load(open("pyproject.toml"' in blob, (
+        "release.yml's verify job no longer asserts the tag matches pyproject"
     )
-    assert "2 of 2" in wrapper_name, (
-        f"publish-wrapper.yml publish job is named {wrapper_name!r}; it must say "
-        "it is the SECOND of two approvals (PMSERV-173)"
+    assert "packaging/pm-server-wrapper/pyproject.toml" in blob, (
+        "release.yml's verify job must also assert the tag matches the WRAPPER "
+        "version (moved here from publish-wrapper.yml by PMSERV-174). Without "
+        "it a stale wrapper is only discovered after pmlens has been published."
     )
-    assert pmlens_name != wrapper_name
 
 
 # ─── The ordering gates ───────────────────────────────────────────────────────
@@ -137,11 +179,62 @@ def test_github_release_waits_for_the_wrapper_on_pypi():
     )
 
 
-def test_wrapper_publish_waits_for_pmlens_on_pypi():
-    """The wrapper's floor must be satisfiable at the moment it is published.
+def test_pmlens_uploads_before_the_wrapper_in_the_single_publish_job():
+    """The permanent window, now closed by step order rather than by a poll.
 
-    This is the gate that closes the *permanent* window: a wrapper published
-    ahead of pmlens cannot be withdrawn or replaced.
+    The wrapper declares ``pmlens>=X.Y.Z``. Published first, it leaves
+    ``uvx pm-server@X.Y.Z`` unresolvable — and if the pmlens upload then fails,
+    that state is permanent, because PyPI never allows re-uploading a filename.
+
+    Step order is the entire enforcement mechanism inside one job, which is
+    *stronger* than the ``needs:`` chain it replaced: ``needs:`` only requires
+    the prior job to succeed, and ``skip-existing: true`` means success is not
+    evidence of an upload. A failed pmlens step here is never followed by a
+    wrapper step at all.
+    """
+    job = _load(RELEASE_YML)["jobs"]["publish"]
+    uploads = [
+        (i, step)
+        for i, step in enumerate(_steps(job))
+        if "gh-action-pypi-publish" in step.get("uses", "") and "if" not in step
+    ]
+    assert len(uploads) == 2, (
+        f"expected exactly two unconditional PyPI uploads in release.yml's "
+        f"publish job (pmlens then the wrapper), found {len(uploads)}"
+    )
+
+    (first_index, first), (second_index, second) = uploads
+    first_dir = (first.get("with") or {}).get("packages-dir", "dist/")
+    second_dir = (second.get("with") or {}).get("packages-dir", "dist/")
+
+    assert "wrapper" not in first_dir, (
+        f"the FIRST upload publishes {first_dir!r}. pmlens must go first — a "
+        "wrapper published ahead of it cannot be withdrawn or replaced."
+    )
+    assert "wrapper-dist" in second_dir, (
+        f"the SECOND upload publishes {second_dir!r}; expected the wrapper's "
+        "wrapper-dist/. If the wrapper is no longer published here, the tag "
+        "path ships pmlens alone and the plugin pin breaks."
+    )
+    assert first_index < second_index
+
+    # Both artifacts must actually be present, or an upload silently publishes
+    # nothing while the step still goes green.
+    for artifact in ("dist", "wrapper-dist"):
+        assert _index_of_step_containing(job, "download-artifact") != -1
+        assert any(
+            (s.get("with") or {}).get("name") == artifact
+            for s in _steps(job)
+            if "download-artifact" in s.get("uses", "")
+        ), f"release.yml's publish job never downloads the {artifact!r} artifact"
+
+
+def test_recovery_path_still_waits_for_pmlens_on_pypi():
+    """The dispatch-only wrapper run has no step ordering to protect it.
+
+    On the rollback/backfill path the wrapper is published alone, so the poll
+    that release.yml no longer needs is the only thing standing between a
+    manual run and a permanently unresolvable metapackage.
     """
     job = _load(WRAPPER_YML)["jobs"]["publish"]
     gate = _index_of_step_containing(job, "pypi.org/pypi/pmlens/")
@@ -213,17 +306,24 @@ def test_release_workflows_never_cancel_an_in_flight_run():
 # ─── The runbook is part of the mechanism ─────────────────────────────────────
 
 
-def test_runbook_exists_and_states_the_two_approval_rule():
-    """PMSERV-173's acceptance criterion: the fact must be written down.
+def test_runbook_states_the_single_approval_rule_and_the_rollback():
+    """PMSERV-173's acceptance criterion, updated for PMSERV-174.
 
-    Before this, "a tag needs two approvals" lived only in a task description.
     The pipeline gates make a mistake loud; the runbook is what stops it being
-    made.
+    made. Two facts have to survive there: that a tag now stops at one
+    approval, and that ``publish-wrapper.yml`` is the rollback and must not be
+    deleted (nor its pypi.org publisher entry removed) until a real release has
+    shipped through the merged workflow.
     """
     assert RUNBOOK.is_file(), "docs/RELEASING.md is missing (PMSERV-173)"
     body = RUNBOOK.read_text(encoding="utf-8")
-    for phrase in ("approval 1 of 2", "approval 2 of 2", "release.yml", "publish-wrapper.yml"):
+    for phrase in ("single approval", "release.yml", "publish-wrapper.yml", "rollback"):
         assert phrase in body, f"docs/RELEASING.md no longer mentions {phrase!r}"
+    assert "approval 1 of 2" not in body, (
+        "docs/RELEASING.md still describes the two-approval flow removed by "
+        "PMSERV-174. A runbook that contradicts the pipeline is worse than no "
+        "runbook — it is what a maintainer follows under time pressure."
+    )
     assert "docs/RELEASING.md" in (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8"), (
         "CONTRIBUTING.md must link the release runbook — an unlinked runbook is "
         "one nobody reads before their first release"

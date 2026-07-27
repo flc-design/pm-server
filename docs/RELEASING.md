@@ -3,10 +3,14 @@
 How a version of `pmlens` (and its `pm-server` compatibility wrapper) reaches
 PyPI, the GitHub Release page, and the Claude Code plugin.
 
-> **The one thing to remember.** Pushing a `vX.Y.Z` tag starts **two** GitHub
-> Actions runs, each with its **own** manual approval. **Approve
-> "Release to PyPI" first, then "Release wrapper (pm-server) to PyPI".**
-> Approving only one used to ship a broken plugin with every job green.
+> **The one thing to remember.** Pushing a `vX.Y.Z` tag stops at **one**
+> approval, which publishes `pmlens` and the `pm-server` wrapper together, in
+> that order. Push the tag **by name** — `--follow-tags` also sends unrelated
+> stale tags, and every tag on the remote starts a release run (§1 step 5).
+>
+> Until PMSERV-174 a tag started two runs with two independent approvals, and
+> approving only one shipped a broken plugin with every job green. If you are
+> reading an older checkout, that is the flow it describes.
 
 ---
 
@@ -91,54 +95,63 @@ below repeats that number and must move in the same commit.
 
 ---
 
-## 2. The two approvals
+## 2. The single approval
 
-Pushing `vX.Y.Z` fires two workflows in parallel:
+Pushing `vX.Y.Z` fires **one** workflow, `.github/workflows/release.yml`, which
+stops once at the `pypi` GitHub environment:
 
-| Run | Workflow | Publishes | Approval |
-|---|---|---|---|
-| **Release to PyPI** | `.github/workflows/release.yml` | `pmlens` | **approval 1 of 2** |
-| **Release wrapper (pm-server) to PyPI** | `.github/workflows/publish-wrapper.yml` | `pm-server` | **approval 2 of 2** |
+| Job | Publishes | Gate |
+|---|---|---|
+| **Publish pmlens + pm-server wrapper to PyPI (single approval)** | `pmlens`, then `pm-server` | the only approval |
 
-Both stop at the `pypi` GitHub environment. **Approve 1 first.** The
-job names carry the ordering so the two prompts are distinguishable in the
-Actions UI.
+Both uploads are **steps in one job**, in that order. That ordering is not a
+rule anyone follows any more — if the pmlens upload fails, the wrapper step is
+never reached.
 
-Why the order matters: the wrapper is a metapackage declaring
+Why the order matters at all: the wrapper is a metapackage declaring
 `pmlens>=X.Y.Z`. Publishing it first creates a window where
-`uvx pm-server@X.Y.Z` cannot resolve — and if the pmlens run's `verify` then
-fails, that window is **permanent**, because PyPI never allows re-uploading a
+`uvx pm-server@X.Y.Z` cannot resolve — and if pmlens then fails to publish,
+that window is **permanent**, because PyPI never allows re-uploading a
 filename.
 
-Since PMSERV-173 both orderings fail loudly instead of silently:
+**Why one job and not two chained with `needs:`** (which earlier drafts of §6
+proposed): GitHub creates a pending deployment per *job*, so two jobs on the
+`pypi` environment means two approval prompts — the thing PMSERV-174 set out to
+remove — and a `needs:` chain makes them sequential rather than batchable.
+Step order inside one job is also a stronger guarantee than `needs:`, which
+only requires the previous job to *succeed*; with `skip-existing: true`, success
+is not evidence that anything was uploaded.
 
-- **Approve 1 only** → the `github-release` job polls PyPI for `pm-server X.Y.Z`
-  for ~14 minutes and then fails. No Release page is created. Approve run 2,
-  then *Re-run failed jobs*.
-- **Approve 2 first** → the wrapper's `publish` job polls PyPI for
-  `pmlens X.Y.Z` and fails **before uploading anything**. Approve run 1, then
-  re-run.
-- **Approve 1, then 2** → green.
+The announcement is still gated separately: `github-release` polls PyPI for
+`pm-server X.Y.Z` before creating the Release page. That poll is not redundant
+— it is the only observation that distinguishes "uploaded" from "skipped as
+already existing".
+
+`publish-wrapper.yml` still exists as the **rollback** and manual backfill, but
+no longer fires on a tag. See §6 before touching it.
 
 ---
 
 ## 3. Job graph and what each red means
 
-**`release.yml`**: `verify` → `build` → (`publish` ∥ `pack-mcpb`) → `github-release`
+**`release.yml`**: `verify` → (`build` ∥ `build-wrapper`) → (`publish` ∥ `pack-mcpb`) → `github-release`
 
 | Gate | Red means |
 |---|---|
 | `verify` › *Tag name must match the tagged tree's version* | The tag says `vX.Y.Z` but the tagged tree's `pyproject.toml` says something else — the version bump is probably uncommitted. Delete the tag, fix, re-tag. |
+| `verify` › *Tag name must match the wrapper's version* | `packaging/pm-server-wrapper/pyproject.toml` was not bumped. This is the v0.12.1 incident. It is checked **here**, before the approval, because after the approval pmlens is already on PyPI and this version can no longer be fixed. |
 | `verify` › ruff + pytest | The **tagged commit** is broken. This job exists because `ci.yml` has no tag trigger, so before it nothing tested what was actually being published. |
 | `pack-mcpb` › `scripts/build_mcpb.py` | `manifest.json` disagrees with `pyproject.toml`, or the MCPB v0.4 shape is violated. |
+| `publish` › *Publish pmlens…* | Upload failed. The wrapper step below it did **not** run, which is the intended behaviour — nothing is half-published. Fix and re-run the job. |
+| `publish` › *Publish pm-server wrapper…* | pmlens uploaded but the wrapper did not. `github-release` will refuse to announce (below). Re-run failed jobs; both uploads are idempotent. |
 | `github-release` › *Require the pm-server wrapper on PyPI* | See §2. |
 
-**`publish-wrapper.yml`**: `build` → `publish`
+**`publish-wrapper.yml`** (dispatch-only rollback): `build` → `publish`
 
 | Gate | Red means |
 |---|---|
-| `build` › *Tag name must match the wrapper's version* | `packaging/pm-server-wrapper/pyproject.toml` was not bumped. This is the v0.12.1 incident. |
-| `publish` › *Require pmlens on PyPI* | See §2. |
+| `build` › *Tag name must match the wrapper's version* | Skipped on dispatch — `github.ref_type` is not `tag`. |
+| `publish` › *Require pmlens on PyPI* | On this path nothing else orders the two uploads, so this poll is load-bearing. See §2. |
 
 ---
 
@@ -170,10 +183,9 @@ Since PMSERV-173 both orderings fail loudly instead of silently:
   `ci.yml`'s 3.11/3.13 matrix never sees the tag.
 - **`pack-mcpb` runs parallel to `publish`, not before it.** A bundle-packing
   failure can therefore land *after* PyPI already has the artifacts.
-- **Two runs, two approvals** — structural, not yet fixed. The permanent fix is
-  to move the wrapper publish into `release.yml` (one run, one approval,
-  ordering guaranteed by `needs:`), which requires the PyPI-side change in §6
-  first. Tracked as the follow-up to PMSERV-173.
+- **Two runs, two approvals** — **fixed in PMSERV-174**; see §2. Kept here as a
+  pointer because older tags still carry the two-approval workflows, so a
+  re-run of an old release run behaves the old way.
 
 ---
 
@@ -182,32 +194,56 @@ Since PMSERV-173 both orderings fail loudly instead of silently:
 No PyPI API token exists anywhere in this project — publishing is OIDC-only.
 The bindings, which must be kept in sync with the workflow filenames:
 
-| PyPI project | Owner | Repository | Workflow | Environment |
-|---|---|---|---|---|
-| `pmlens` | `flc-design` | `pmlens` | `release.yml` | `pypi` |
-| `pm-server` | `flc-design` | `pmlens` | `publish-wrapper.yml` | `pypi` |
+| PyPI project | Owner | Repository | Workflow | Environment | Status |
+|---|---|---|---|---|---|
+| `pmlens` | `flc-design` | `pmlens` | `release.yml` | `pypi` | live |
+| `pm-server` | `flc-design` | `pmlens` | `release.yml` | `pypi` | live since PMSERV-174 |
+| `pm-server` | `flc-design` | `pmlens` | `publish-wrapper.yml` | `pypi` | **rollback — keep until step 5** |
 
 **Renaming or moving a workflow file breaks publishing**, because the workflow
 filename is part of the OIDC claim.
 
-**To consolidate the wrapper into `release.yml`** (the fix for the two-approval
-gap), do it **between releases**, in this order. PyPI allows a project to have
-several trusted publishers at once, so this is add-then-verify-then-remove with
-no window in which the wrapper is unpublishable:
+### Consolidating the wrapper into `release.yml` (PMSERV-174)
 
-1. On pypi.org → `pm-server` → *Manage* → *Publishing* → add a second GitHub
-   publisher: `flc-design` / `pmlens` / `release.yml` / `pypi`. **Leave the
+Done **between releases**, in this order. PyPI allows a project to have several
+trusted publishers at once, so this is add-then-verify-then-remove with no
+window in which the wrapper is unpublishable.
+
+1. ✅ **Done 2026-07-27.** On pypi.org → `pm-server` → *Manage* → *Publishing* →
+   add a second GitHub publisher: `flc-design` / `pmlens` / `release.yml` /
+   `pypi`. Note the Environment field's placeholder reads `release`; it must be
+   **`pypi`**, matching `environment: name: pypi` in the workflow. **Leave the
    `publish-wrapper.yml` entry in place.**
-2. In the repo, add a wrapper-publish job to `release.yml` with
-   `needs: publish` (so pmlens is on PyPI first by construction), move the
-   wrapper's tag↔version assertion into `verify`, and point `github-release` at
-   both publish jobs. Drop the now-redundant pmlens-presence poll from the
-   wrapper path; keep the `pm-server` presence poll before `github-release`.
-3. Change `publish-wrapper.yml`'s trigger to `workflow_dispatch:` only — this
-   removes the second automatic run and the second approval while preserving a
-   manual recovery path. Do not delete the file.
-4. Ship one real release through the merged workflow. Confirm on pypi.org that
-   **both** projects show the new version with provenance attestations.
-5. Only *after* that success, remove the `publish-wrapper.yml` publisher entry.
-   If step 4 fails for OIDC reasons, revert step 3 — the old path still works
-   because its publisher entry was never removed.
+2. ✅ **Done 2026-07-27.** In the repo: build the wrapper in `release.yml`
+   (`build-wrapper`), publish both from the **single** `publish` job as two
+   ordered steps, move the wrapper's tag↔version assertion into `verify`, and
+   keep the `pm-server` presence poll before `github-release`.
+
+   > Earlier drafts of this step said "add a wrapper-publish job with
+   > `needs: publish`". That does **not** produce one approval — GitHub gates
+   > per job, so a second job on the `pypi` environment is a second prompt. See
+   > §2 for why the two uploads are steps in one job instead.
+
+3. ✅ **Done 2026-07-27.** Change `publish-wrapper.yml`'s trigger to
+   `workflow_dispatch:` only — this removes the second automatic run and the
+   second approval while preserving a manual recovery path. **Do not delete the
+   file.**
+4. ⬜ **Pending.** Ship one real release through the merged workflow. Confirm on
+   pypi.org that **both** projects show the new version, and that the
+   provenance for **both** now names `release.yml`:
+
+   ```bash
+   curl -s https://pypi.org/integrity/pm-server/X.Y.Z/pm_server-X.Y.Z-py3-none-any.whl/provenance \
+     | python3 -c "import json,sys; print(json.load(sys.stdin)['attestation_bundles'][0]['publisher'])"
+   ```
+
+   Before PMSERV-174 that printed `publish-wrapper.yml`. Printing `release.yml`
+   is the machine-checkable evidence that the merged path actually published,
+   rather than a maintainer's impression that the approval felt like one click.
+5. ⬜ **Pending — only after step 4 succeeds.** Remove the
+   `publish-wrapper.yml` publisher entry on pypi.org.
+
+**Rollback**, if step 4 fails for OIDC reasons: restore `push: tags: 'v*'` in
+`publish-wrapper.yml` and re-tag. The old two-approval path works again
+unchanged, because its publisher entry was never removed — which is the entire
+reason step 5 comes last.

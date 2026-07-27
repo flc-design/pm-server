@@ -7,22 +7,36 @@ name: Release wrapper (pm-server) to PyPI
 # Publishing, so no local PyPI API token is ever needed (matches the .pypirc
 # hygiene decision of 2026-05-19). PMSERV-137 Phase-3 / step 7.
 #
+# RECOVERY PATH ONLY since PMSERV-174 (ADR-050 Phase 3).
+#
+# The normal release publishes this wrapper from release.yml, in the same job
+# as pmlens and behind the same single approval. The `v*` trigger was removed
+# here so a tag no longer starts a second run needing a second approval — that
+# was the half-release hole PMSERV-173 made loud and PMSERV-174 closed.
+#
+# This file is deliberately NOT deleted. It is the rollback: if the merged
+# publish in release.yml fails for OIDC reasons, restore the `push: tags: 'v*'`
+# trigger here and the old two-approval path works again, because the
+# `publish-wrapper.yml` trusted publisher entry on pypi.org is kept until a
+# real release has shipped through the merged workflow (docs/RELEASING.md §6,
+# steps 4–5). It also remains the manual backfill for a wrapper-only republish.
+#
 # Triggers:
-#   - push of a v* tag  → publishes the wrapper for that release (auto, future).
-#   - workflow_dispatch → one-off / backfill (e.g. the current 0.12.0). Run it
-#     from `main` (where this file lives); it builds the wrapper at the version
-#     committed on that ref. main already carries the latest wrapper version, so
-#     no ref input is needed (and untrusted input in checkout `ref:` is avoided).
+#   - workflow_dispatch → manual recovery / backfill. Run it from `main` (where
+#     this file lives); it builds the wrapper at the version committed on that
+#     ref, so no ref input is needed (and untrusted input in checkout `ref:` is
+#     avoided). Note the caveat in docs/RELEASING.md: the `pypi` environment may
+#     restrict deployments to `v*` tags, in which case the dispatch path is
+#     unusable and the fallback is a `vX.Y.Z-wrapper.N` tag.
 #
 # PyPI setup (one-time, done by a maintainer on pypi.org):
-#   pm-server project → Settings → Publishing → Add a GitHub trusted publisher:
-#     Owner=flc-design  Repository=pmlens
-#     Workflow=publish-wrapper.yml  Environment=pypi
+#   pm-server project → Settings → Publishing → two GitHub trusted publishers:
+#     Owner=flc-design  Repository=pmlens  Environment=pypi
+#     Workflow=release.yml           ← the live path since PMSERV-174
+#     Workflow=publish-wrapper.yml   ← kept as the rollback; remove only after
+#                                      a real release ships via release.yml
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -101,8 +115,12 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # Named to pair with release.yml's "approval 1 of 2" — see PMSERV-173.
-    name: Publish pm-server wrapper to PyPI (approval 2 of 2)
+    # Standalone since PMSERV-174: the normal path publishes this wrapper from
+    # release.yml under a single approval. Reaching this job means someone is
+    # deliberately running the recovery/backfill path, so the pmlens presence
+    # gate below is doing real work again — nothing else orders the two uploads
+    # here.
+    name: Publish pm-server wrapper to PyPI (recovery / backfill)
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -141,7 +159,7 @@ jobs:
             echo "poll ${attempt}/${attempts}: HTTP ${code} for ${url}"
             [ "$attempt" -lt "$attempts" ] && sleep $((attempt * 15))
           done
-          echo "::error::pmlens ${VERSION} is not on PyPI after 10 polls (~11 minutes). Approve 'Release to PyPI' (approval 1 of 2) FIRST, then re-run this job. Publishing this wrapper now would ship a metapackage whose pmlens>=${VERSION} floor cannot resolve. See docs/RELEASING.md."
+          echo "::error::pmlens ${VERSION} is not on PyPI after 10 polls (~11 minutes). Publish pmlens ${VERSION} FIRST — normally by tagging v${VERSION}, which runs release.yml and publishes both — then re-run this job only if the wrapper is still missing. Publishing this wrapper now would ship a metapackage whose pmlens>=${VERSION} floor cannot resolve, permanently: PyPI never allows re-uploading a filename. See docs/RELEASING.md §2 and §6."
           exit 1
 
       - name: Download distributions
