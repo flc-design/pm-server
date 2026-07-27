@@ -20,7 +20,7 @@ from .auto_memory import (
     sync_memory_md_pointer,
 )
 from .discovery import detect_project_info, read_git_branch, scan_projects
-from .memory import MemoryStore, _has_pm_server_schema
+from .memory import MemoryStore, SearchDiagnostics, _has_pm_server_schema
 from .models import (
     ConfidenceLevel,
     Consequences,
@@ -304,6 +304,30 @@ _LENS_FALLBACK_NOTE: str = (
     "Use Claude Code in this project to record memories — "
     "Lens (PM_LENS=1) is read-only."
 )
+
+
+def _search_diag_keys(diag: SearchDiagnostics) -> dict:
+    """Response keys that explain WHY a search returned what it did (PMSERV-175).
+
+    ``search_strategy`` on its own cannot separate "nothing relevant is
+    stored" from "this query could never have matched", and a caller who hit
+    that ambiguity concluded the search path was broken and read the DB
+    directly. These keys close that gap.
+
+    Kept sparse on purpose: the fields ride on every search response, so they
+    appear only when they carry information — ``fallback_reason`` when the FTS
+    path did not produce the result, and the term breakdown only when the LIKE
+    fallback actually ran (there are no per-term verdicts on the FTS path).
+    """
+    out: dict = {}
+    if diag.fallback_reason:
+        out["fallback_reason"] = diag.fallback_reason
+    if diag.strategy == "like_fallback":
+        out["matched_terms"] = list(diag.matched_terms)
+        out["unmatched_terms"] = list(diag.unmatched_terms)
+        if diag.dropped_terms:
+            out["dropped_terms"] = list(diag.dropped_terms)
+    return out
 
 
 def _maybe_add_lens_note(result: dict, store: MemoryStore) -> dict:
@@ -1210,14 +1234,13 @@ def pm_recall(
     """Recall memories relevant to the current context.
 
     With no arguments: returns last session summary + recent memories.
-    With query: full-text search (FTS5 + LIKE fallback). Prefer ONE short
-        keyword — a multi-word or natural-language query returns 0 rows
-        because ``unicode61`` does not segment CJK and the LIKE fallback
-        matches the whole query as a single literal substring rather than
-        AND-ing the terms. ``search_strategy`` reports which path ran; a
-        "like_fallback" with 0 results usually means the query was too long,
-        not that nothing is stored. See ``pm_memory_search`` for the full
-        mechanics and ``docs/reports/ja-fts-baseline.md`` for measured rates.
+    With query: full-text search (FTS5, falling back to an AND-ed per-term
+        LIKE scan when MATCH finds nothing). Prefer short keywords; every term
+        must occur in the SAME memory. On a 0-result response read
+        ``unmatched_terms`` before concluding nothing is stored — it names the
+        terms that exist nowhere, and dropping them is usually the whole fix.
+        See ``pm_memory_search`` for the full mechanics and
+        ``docs/reports/ja-fts-baseline.md`` for measured rates.
     With task_id: memories linked to that task.
     type filter: observation | insight | lesson
     cross_project: search across all projects (Phase 3).
@@ -1290,13 +1313,14 @@ def pm_recall(
         store = _get_memory_store(project_path)
         if not query:
             return {"status": "error", "message": "query is required for cross_project search"}
-        results, search_strategy = store.search_global_ex(query, limit=limit)
+        results, diag = store.search_global_full(query, limit=limit)
         return {
             "current_session_id": _current_session_id,
             "query": query,
             "cross_project": True,
             "results": results,
-            "search_strategy": search_strategy,
+            "search_strategy": diag.strategy,
+            **_search_diag_keys(diag),
         }
 
     # ADR-039 T3: only the default (no query/task_id) and query paths ever
@@ -1409,12 +1433,13 @@ def pm_recall(
 
     # Search by query
     if query:
-        results, search_strategy = store.search_ex(query, type=type, limit=limit)
+        results, diag = store.search_full(query, type=type, limit=limit)
         response = _maybe_add_lens_note(
             {
                 "query": query,
                 "results": [_memory_dict(m) for m in results],
-                "search_strategy": search_strategy,
+                "search_strategy": diag.strategy,
+                **_search_diag_keys(diag),
             },
             store,
         )
@@ -1534,22 +1559,24 @@ def pm_memory_search(
 ) -> dict:
     """Advanced memory search with multiple filters.
 
-    query: Full-text search query (required). Prefer ONE short keyword per
-        call; long natural-language phrases reliably return 0 rows. Two
-        mechanics compound: (1) FTS5 uses ``tokenize='unicode61'``, which does
-        not segment CJK — a whole run between punctuation/ASCII is ONE token,
-        so "ホスティング形態" never MATCHes inside "…でもホスティング形態で…"
-        (quoting it as a phrase does not help; it is a substring of a token,
-        not a token); (2) when MATCH finds nothing, the LIKE fallback matches
-        the ENTIRE query as a single literal substring — it is NOT a
-        term-by-term AND — so a multi-word query hits only if those words
-        appear verbatim and adjacent in the stored text. Search one keyword at
-        a time and narrow with ``tags``/``task_id`` instead. ``search_strategy``
-        in the response reports which path ran ("fts" | "like_fallback"); a
-        "like_fallback" with 0 results usually means the query was too long,
-        NOT that nothing relevant is stored — retry with a single term before
-        concluding the memory is absent. Measured baseline:
-        ``docs/reports/ja-fts-baseline.md``.
+    query: Full-text search query (required). Prefer short keywords over a
+        natural-language sentence. Retrieval is FTS5 (``tokenize='unicode61'``)
+        and, when MATCH finds nothing, a LIKE fallback that AND-s the query's
+        terms: every term must appear somewhere in the SAME memory, in any
+        order and not necessarily adjacent. unicode61 does not segment CJK — a
+        whole run between punctuation/ASCII is ONE token, so "ホスティング形態"
+        never MATCHes inside "…でもホスティング形態で…" (quoting it as a phrase
+        does not help; it is a substring of a token, not a token) — those
+        queries land on the fallback, which is what the fallback is for.
+        On a 0-result response, do NOT conclude the memory is absent — read
+        the diagnostics first: ``unmatched_terms`` names the terms that exist
+        nowhere in the store, i.e. exactly what to drop and retry; an EMPTY
+        ``unmatched_terms`` with 0 results means every term exists but no
+        single memory contains them all, so search fewer terms. Also returned:
+        ``search_strategy`` ("fts" | "like_fallback"), ``fallback_reason``,
+        ``matched_terms``, and ``dropped_terms`` when a very long query was
+        truncated. Narrow with ``tags``/``task_id`` rather than by piling on
+        query words. Measured baseline: ``docs/reports/ja-fts-baseline.md``.
     type: Filter by memory type (observation | insight | lesson).
     tags: Comma-separated tags for AND filtering.
     task_id: Filter by associated task.
@@ -1558,7 +1585,7 @@ def pm_memory_search(
     store = _get_memory_store(project_path)
 
     if cross_project:
-        results, search_strategy = store.search_global_ex(query, limit=limit)
+        results, diag = store.search_global_full(query, limit=limit)
         if tags:
             tag_set = {t.strip() for t in tags.split(",") if t.strip()}
             results = [r for r in results if tag_set.issubset(set(r.get("tags", [])))]
@@ -1566,10 +1593,11 @@ def pm_memory_search(
             "query": query,
             "cross_project": True,
             "results": results[:limit],
-            "search_strategy": search_strategy,
+            "search_strategy": diag.strategy,
+            **_search_diag_keys(diag),
         }
 
-    results, search_strategy = store.search_ex(query, type=type, limit=limit * 2)
+    results, diag = store.search_full(query, type=type, limit=limit * 2)
 
     # Apply additional filters
     if tags:
@@ -1595,7 +1623,8 @@ def pm_memory_search(
             "query": query,
             "filters": {"type": type, "tags": tags, "task_id": task_id},
             "results": [_result_dict(m) for m in results[:limit]],
-            "search_strategy": search_strategy,
+            "search_strategy": diag.strategy,
+            **_search_diag_keys(diag),
         },
         store,
     )

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import Memory, MemoryType, SessionSummary
@@ -49,6 +50,11 @@ def _json_to_list(s: str | None) -> list[str]:
 
 _FTS5_SPECIAL_RE = re.compile(r"[-:]")
 
+# The single definition of "where does a query term begin and end". Shared by
+# the FTS5 MATCH path and the LIKE fallback (PMSERV-175) so the two can never
+# drift apart: a quoted phrase is one term, otherwise whitespace separates.
+_QUERY_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
+
 
 def _sanitize_fts_query(query: str) -> str:
     """Sanitize a user query for safe FTS5 MATCH usage.
@@ -59,7 +65,7 @@ def _sanitize_fts_query(query: str) -> str:
     are preserved as-is.
     """
     parts: list[str] = []
-    for m in re.finditer(r'"[^"]*"|\S+', query):
+    for m in _QUERY_TOKEN_RE.finditer(query):
         token = m.group()
         if token.startswith('"'):
             parts.append(token)
@@ -68,6 +74,77 @@ def _sanitize_fts_query(query: str) -> str:
         else:
             parts.append(token)
     return " ".join(parts)
+
+
+# ─── LIKE fallback term splitting (PMSERV-175) ───────
+
+# Cap on how many terms the LIKE fallback will AND together. A pasted
+# paragraph would otherwise build an unbounded WHERE clause plus one
+# existence probe per term. Terms past the cap are dropped from the AND and
+# reported in ``dropped_terms`` — a silent truncation would read as "these
+# terms were considered and matched", which is the exact confusion this whole
+# change exists to remove.
+_MAX_FALLBACK_TERMS = 12
+
+
+def _split_query_terms(query: str) -> list[str]:
+    """Split a query into the terms the LIKE fallback should AND together.
+
+    Uses the SAME token regex as :func:`_sanitize_fts_query`, deliberately:
+    if the two paths disagreed on where a term begins and ends, the reported
+    ``matched_terms`` would describe a different split than the one FTS5
+    actually attempted, and the diagnostics would mislead rather than explain.
+
+    Quoted phrases stay a single term with the quotes stripped — LIKE wants
+    the literal text, not FTS5's phrase syntax.
+    """
+    terms: list[str] = []
+    for m in _QUERY_TOKEN_RE.finditer(query):
+        token = m.group()
+        if token.startswith('"'):
+            token = token[1:-1] if len(token) >= 2 and token.endswith('"') else token[1:]
+        if token:
+            terms.append(token)
+    return terms
+
+
+def _like_pattern(term: str) -> str:
+    """Build an escaped ``%term%`` pattern for a LIKE ... ESCAPE '\\' clause."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+@dataclass(frozen=True)
+class SearchDiagnostics:
+    """Why a search returned what it returned (PMSERV-175).
+
+    ``strategy`` alone cannot distinguish "nothing relevant is stored" from
+    "this query could never have matched anything", and that ambiguity is not
+    hypothetical: a caller hit an empty ``like_fallback`` result, concluded
+    the search path was broken, read ``.pm/memory.db`` with sqlite3 directly,
+    and recorded that unverified conclusion as a memory. These fields exist so
+    the answer is visible at the call site.
+
+    Attributes:
+        strategy: ``"fts"`` or ``"like_fallback"`` (unchanged semantics).
+        fallback_reason: ``None`` when FTS produced the results, otherwise
+            ``"fts_no_match"`` (MATCH was empty so the LIKE fallback ran),
+            ``"global_index_absent"`` or ``"fts_error"`` (cross-project
+            graceful degradation — those keep ``strategy="fts"`` for backward
+            compatibility, so the reason is the ONLY way to tell them apart
+            from a genuine empty FTS hit).
+        matched_terms: fallback terms that exist somewhere in the store.
+        unmatched_terms: fallback terms that exist nowhere — a non-empty list
+            here is the direct answer to "why did I get zero rows".
+        dropped_terms: terms beyond ``_MAX_FALLBACK_TERMS``, never silently
+            discarded.
+    """
+
+    strategy: str
+    fallback_reason: str | None = None
+    matched_terms: tuple[str, ...] = field(default_factory=tuple)
+    unmatched_terms: tuple[str, ...] = field(default_factory=tuple)
+    dropped_terms: tuple[str, ...] = field(default_factory=tuple)
 
 
 # ─── SQLite concurrency pragmas (PMSERV-047) ────────
@@ -545,12 +622,12 @@ class MemoryStore:
 
         return memory_id
 
-    def search_ex(
+    def search_full(
         self,
         query: str,
         type: str | None = None,
         limit: int = 5,
-    ) -> tuple[list[Memory], str]:
+    ) -> tuple[list[Memory], SearchDiagnostics]:
         """Full-text search using FTS5, with a LIKE fallback when FTS finds nothing.
 
         PMSERV-143 (ADR-039 T5): ``memories_fts`` uses ``tokenize='unicode61'``,
@@ -566,18 +643,21 @@ class MemoryStore:
         if the numbers moved.
 
         When the FTS5 MATCH query returns zero rows, this falls back to a
-        plain substring scan (``content LIKE ? OR tags LIKE ?``, with ``%``
-        and ``_`` escaped) so those queries still surface something instead of
-        a hard empty result. Note the exact semantics, because they are
-        stricter than callers assume: the ENTIRE query string becomes ONE
-        literal pattern — terms are never split and never AND-ed — so the
-        fallback rescues single-keyword queries only. A multi-word query hits
-        only when those words appear verbatim AND adjacent in the stored text,
-        which is why e.g. "egress ホスティング形態" returns 0 rows even though
-        both terms live in the same row (stored as "…ホスティング形態でegress…").
-        This is a recall safety net, not a tokenizer fix
-        — trigram tokenizer migration is intentionally out of scope here (see
-        ADR-039 AD-8) and tracked as a separate future issue.
+        substring scan (``content LIKE ? OR tags LIKE ?``, with ``%`` and
+        ``_`` escaped) so those queries still surface something instead of a
+        hard empty result. PMSERV-175: the query is split into terms (same
+        rule as the MATCH path, see :func:`_split_query_terms`) and the terms
+        are AND-ed, one ``(content LIKE ? OR tags LIKE ?)`` clause each.
+        Before that change the ENTIRE query string was a single literal
+        pattern, so a multi-word query hit only when those words appeared
+        verbatim AND adjacent in stored text — e.g. "egress ホスティング形態"
+        returned 0 rows even though both terms live in the same row, stored as
+        "…ホスティング形態でegress…". The net was widest exactly where CJK FTS
+        is weakest, i.e. it did not catch what it existed to catch.
+
+        This is still a recall safety net, not a tokenizer fix — trigram
+        tokenizer migration is intentionally out of scope here (see ADR-039
+        AD-8) and tracked as a separate future issue (PMSERV-150).
 
         Args:
             query: Search query string.
@@ -585,12 +665,11 @@ class MemoryStore:
             limit: Maximum results.
 
         Returns:
-            ``(memories, strategy)`` where ``strategy`` is ``"fts"`` when the
-            FTS5 MATCH path produced the results, or ``"like_fallback"`` when
-            the LIKE fallback ran. The ``type`` filter is applied as a
-            post-filter *after* LIMIT in both branches — matching this
-            method's pre-existing (pre-T5) behaviour exactly, so switching
-            strategies never changes when the type filter is applied.
+            ``(memories, diagnostics)``; see :class:`SearchDiagnostics`. The
+            ``type`` filter is applied as a post-filter *after* LIMIT in both
+            branches — matching this method's pre-existing (pre-T5) behaviour
+            exactly, so switching strategies never changes when the type
+            filter is applied.
         """
         safe_query = _sanitize_fts_query(query)
         rows = self._conn.execute(
@@ -601,24 +680,99 @@ class MemoryStore:
                LIMIT ?""",
             (safe_query, limit),
         ).fetchall()
-        strategy = "fts"
+        diag = SearchDiagnostics(strategy="fts")
 
         if not rows:
-            strategy = "like_fallback"
-            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            pattern = f"%{escaped}%"
-            rows = self._conn.execute(
-                """SELECT * FROM memories
-                   WHERE (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
-                   ORDER BY created_at DESC
-                   LIMIT ?""",
-                (pattern, pattern, limit),
-            ).fetchall()
+            rows, diag = self._like_fallback(
+                query,
+                limit,
+                table="memories",
+                conn=self._conn,
+            )
 
         memories = [self._row_to_memory(r) for r in rows]
         if type:
             memories = [m for m in memories if m.type.value == type]
-        return memories, strategy
+        return memories, diag
+
+    @staticmethod
+    def _like_fallback(
+        query: str,
+        limit: int,
+        table: str,
+        conn: sqlite3.Connection,
+    ) -> tuple[list[sqlite3.Row], SearchDiagnostics]:
+        """Run the AND-ed LIKE fallback and report which terms carried it.
+
+        Shared by :meth:`search_full` and :meth:`search_global_full` so the
+        per-project and cross-project paths cannot drift — they degrade for
+        the same reason (unicode61 vs CJK) and must degrade the same way.
+
+        ``table`` is an internal literal (``memories`` / ``memory_index``),
+        never caller input, and the WHERE clause is a fixed string repeated
+        per term; every value is bound. No user text reaches the SQL text.
+        """
+        terms = _split_query_terms(query)
+        if not terms:
+            # Whitespace-only query: preserve the pre-PMSERV-175 single-pattern
+            # behaviour rather than inventing a new empty-query semantics.
+            terms = [query]
+        used, dropped = terms[:_MAX_FALLBACK_TERMS], terms[_MAX_FALLBACK_TERMS:]
+
+        matched: list[str] = []
+        unmatched: list[str] = []
+        for term in used:
+            pattern = _like_pattern(term)
+            hit = conn.execute(
+                f"""SELECT 1 FROM {table}
+                    WHERE (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
+                    LIMIT 1""",  # noqa: S608 - table is an internal literal
+                (pattern, pattern),
+            ).fetchone()
+            (matched if hit else unmatched).append(term)
+
+        clause = " AND ".join(
+            ["(content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"] * len(used)
+        )
+        params: list[object] = []
+        for term in used:
+            pattern = _like_pattern(term)
+            params.extend((pattern, pattern))
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT * FROM {table}
+                WHERE {clause}
+                ORDER BY created_at DESC
+                LIMIT ?""",  # noqa: S608 - clause is built from a fixed literal
+            params,
+        ).fetchall()
+
+        return rows, SearchDiagnostics(
+            strategy="like_fallback",
+            fallback_reason="fts_no_match",
+            matched_terms=tuple(matched),
+            unmatched_terms=tuple(unmatched),
+            dropped_terms=tuple(dropped),
+        )
+
+    def search_ex(
+        self,
+        query: str,
+        type: str | None = None,
+        limit: int = 5,
+    ) -> tuple[list[Memory], str]:
+        """Full-text search returning only the strategy label.
+
+        Thin delegation to :meth:`search_full`, preserving the
+        pre-PMSERV-175 two-tuple return for existing callers.
+
+        Args:
+            query: Search query string.
+            type: Filter by memory type.
+            limit: Maximum results.
+        """
+        memories, diag = self.search_full(query, type=type, limit=limit)
+        return memories, diag.strategy
 
     def search(
         self,
@@ -1460,15 +1614,15 @@ class MemoryStore:
             result["blocked"] = False
         return result
 
-    def search_global_ex(
+    def search_global_full(
         self,
         query: str,
         limit: int = 10,
-    ) -> tuple[list[dict], str]:
+    ) -> tuple[list[dict], SearchDiagnostics]:
         """Cross-project search with a LIKE fallback when FTS finds nothing.
 
         PMSERV-153 (ADR-039 followup): the cross-project sibling of
-        :meth:`search_ex`. ``memory_index_fts`` uses the same
+        :meth:`search_full`. ``memory_index_fts`` uses the same
         ``tokenize='unicode61'`` as the per-project ``memories_fts``, so the
         identical CJK caveat applies — compound Japanese queries (e.g.
         "経営戦略") can MATCH zero rows even though the characters are present.
@@ -1476,20 +1630,21 @@ class MemoryStore:
         measured hit/miss numbers, and ``tests/test_memory_ja_fts.py`` for the
         golden-query lock; both are SQLite-version-dependent.
 
-        When the FTS5 MATCH returns zero rows, fall back to a literal substring
-        scan over ``memory_index`` (``content LIKE ? OR tags LIKE ?`` with
-        ``%``/``_`` escaped) so those queries surface something instead of a
-        hard empty result — a recall safety net, not a tokenizer fix (trigram
-        migration is PMSERV-150, out of scope here).
+        When the FTS5 MATCH returns zero rows, fall back to a substring scan
+        over ``memory_index`` via the shared :meth:`_like_fallback` — the same
+        AND-ed, per-term scan the per-project path uses (PMSERV-175), so both
+        indexes degrade identically. A recall safety net, not a tokenizer fix
+        (trigram migration is PMSERV-150, out of scope here).
 
         Returns:
-            ``(results, strategy)`` where ``strategy`` is ``"fts"`` when the
-            FTS5 MATCH produced the results (including the graceful-degradation
-            empty result when the global index is absent or a ``sqlite3.Error``
-            occurs), or ``"like_fallback"`` when the LIKE fallback ran.
+            ``(results, diagnostics)``; see :class:`SearchDiagnostics`. The
+            graceful-degradation empty results (global index absent, or a
+            ``sqlite3.Error``) keep ``strategy="fts"`` for backward
+            compatibility — ``fallback_reason`` is what distinguishes them
+            from a genuine empty FTS hit.
         """
         if self.global_db_path is None or not self.global_db_path.exists():
-            return [], "fts"
+            return [], SearchDiagnostics(strategy="fts", fallback_reason="global_index_absent")
         conn: sqlite3.Connection | None = None
         try:
             if self.global_readonly:
@@ -1513,18 +1668,14 @@ class MemoryStore:
                    LIMIT ?""",
                 (safe_query, limit),
             ).fetchall()
-            strategy = "fts"
+            diag = SearchDiagnostics(strategy="fts")
             if not rows:
-                strategy = "like_fallback"
-                escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                pattern = f"%{escaped}%"
-                rows = conn.execute(
-                    """SELECT * FROM memory_index
-                       WHERE (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
-                       ORDER BY created_at DESC
-                       LIMIT ?""",
-                    (pattern, pattern, limit),
-                ).fetchall()
+                rows, diag = self._like_fallback(
+                    query,
+                    limit,
+                    table="memory_index",
+                    conn=conn,
+                )
             # Provenance is optional: a global index that predates PMSERV-156
             # has no source columns, and this is a read path that must not
             # raise on an un-migrated DB (ingest is what migrates it).
@@ -1547,12 +1698,25 @@ class MemoryStore:
                     ),
                 }
                 for r in rows
-            ], strategy
+            ], diag
         except sqlite3.Error:
-            return [], "fts"
+            return [], SearchDiagnostics(strategy="fts", fallback_reason="fts_error")
         finally:
             if conn is not None:
                 conn.close()
+
+    def search_global_ex(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> tuple[list[dict], str]:
+        """Cross-project search returning only the strategy label.
+
+        Thin delegation to :meth:`search_global_full`, preserving the
+        pre-PMSERV-175 two-tuple return for existing callers.
+        """
+        results, diag = self.search_global_full(query, limit=limit)
+        return results, diag.strategy
 
     def search_global(
         self,

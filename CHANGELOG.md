@@ -54,6 +54,41 @@
 - **`pm_status` gained a `warnings[]` key**, and `pm_update_rules` results gained
   a `hosts` field naming every host that reads the written file. `host` still
   carries the single owning host.
+- **Memory search: the LIKE fallback now AND-s the query's terms, and an empty
+  result explains itself (PMSERV-175)**. The fallback used to match the *entire*
+  query as one literal substring — never splitting terms, never AND-ing them —
+  so a multi-word query hit only when those words appeared verbatim and adjacent
+  in stored text. Since the fallback exists to catch what `unicode61` misses on
+  CJK, and what it misses is precisely compound/multi-word queries, the safety
+  net was widest where it was needed least. `egress ホスティング形態` returned 0
+  rows even though both terms lived in the same memory, stored as
+  `…ホスティング形態でegress宣言…`; it now returns that row.
+
+  `pm_recall(query=…)` and `pm_memory_search` gained additive keys
+  `fallback_reason` (`fts_no_match` | `global_index_absent` | `fts_error`),
+  `matched_terms`, `unmatched_terms`, and `dropped_terms`. They appear only when
+  they carry information, so an FTS hit keeps its previous response shape. On a
+  0-result response the keys separate the two causes that used to look
+  identical: a non-empty `unmatched_terms` names terms that exist nowhere (drop
+  them and retry), while an empty one means every term exists but no single
+  memory holds them all (search fewer terms). That ambiguity was not
+  hypothetical — a caller hit it, concluded the search path was broken, read
+  `.pm/memory.db` with sqlite3 directly, and recorded that unverified
+  conclusion as a memory.
+
+  `search_ex()` and `search_global_ex()` keep their two-tuple signature and are
+  now thin delegations to new `search_full()` / `search_global_full()`, which
+  return a `SearchDiagnostics`. Per-project and cross-project share one
+  `_like_fallback()` implementation so the two indexes cannot degrade
+  differently. Term splitting reuses the MATCH path's own token regex, so
+  `matched_terms` always describes the split FTS actually attempted. Queries
+  longer than 12 terms are capped, with the remainder reported in
+  `dropped_terms` rather than silently discarded.
+
+  This is not the trigram migration (still PMSERV-150): that would raise the
+  FTS-only recall, whereas this raises the fallback's. Measured golden-corpus
+  recall moved from 19/23 to 20/24 combined, with FTS-only unchanged at 14 —
+  see `docs/reports/ja-fts-baseline.md`.
 
 ### Fixed
 

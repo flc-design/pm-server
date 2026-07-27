@@ -146,6 +146,63 @@ class TestPmMemorySearch:
         result = pm_memory_search(query="memory", task_id="TEST-001")
         assert all(r["task_id"] == "TEST-001" for r in result["results"])
 
+    # ─── PMSERV-175: empty results must explain themselves ──────────
+
+    def test_fts_hit_carries_no_diagnostic_noise(self, tmp_path, monkeypatch):
+        """The diagnostics ride on every response, so a clean FTS hit stays clean."""
+        self._setup_project(tmp_path, monkeypatch)
+        from pmlens.server import pm_memory_search, pm_remember
+
+        pm_remember(content="JWT authentication flow", tags="auth,jwt")
+
+        result = pm_memory_search(query="authentication")
+        assert result["search_strategy"] == "fts"
+        assert "fallback_reason" not in result
+        assert "matched_terms" not in result
+        assert "unmatched_terms" not in result
+
+    def test_zero_results_names_the_absent_term(self, tmp_path, monkeypatch):
+        """The whole point: a caller must be able to see WHY it got nothing.
+
+        Without this, an empty like_fallback is indistinguishable from a
+        broken search — which is what sent an earlier caller to sqlite3.
+        """
+        self._setup_project(tmp_path, monkeypatch)
+        from pmlens.server import pm_memory_search, pm_remember
+
+        pm_remember(content="JWT authentication flow", tags="auth,jwt")
+
+        result = pm_memory_search(query="authentication zzzunobtainiumzzz")
+        assert result["results"] == []
+        assert result["search_strategy"] == "like_fallback"
+        assert result["fallback_reason"] == "fts_no_match"
+        assert result["matched_terms"] == ["authentication"]
+        assert result["unmatched_terms"] == ["zzzunobtainiumzzz"]
+
+    def test_multi_term_query_hits_when_terms_share_a_memory(self, tmp_path, monkeypatch):
+        """Non-adjacent terms in one memory: 0 rows before PMSERV-175."""
+        self._setup_project(tmp_path, monkeypatch)
+        from pmlens.server import pm_memory_search, pm_remember
+
+        pm_remember(content="ホスティング形態でegress宣言が変わる", tags="design")
+
+        result = pm_memory_search(query="egress ホスティング形態")
+        assert len(result["results"]) == 1
+        assert result["search_strategy"] == "like_fallback"
+        assert result["unmatched_terms"] == []
+
+    def test_pm_recall_query_path_surfaces_the_same_diagnostics(self, tmp_path, monkeypatch):
+        """pm_recall(query=...) shares search_full, so it must share the keys."""
+        self._setup_project(tmp_path, monkeypatch)
+        from pmlens.server import pm_recall, pm_remember
+
+        pm_remember(content="JWT authentication flow", tags="auth,jwt")
+
+        result = pm_recall(query="authentication zzzunobtainiumzzz")
+        assert result["results"] == []
+        assert result["fallback_reason"] == "fts_no_match"
+        assert result["unmatched_terms"] == ["zzzunobtainiumzzz"]
+
 
 # ─── context.py inject_context ─────────────────────────
 
