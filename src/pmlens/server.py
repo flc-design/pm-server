@@ -1664,6 +1664,7 @@ def pm_memory_ingest(
     force: bool = False,
     purge: bool = False,
     vacuum: bool = False,
+    redact: bool = True,
     project_path: str | None = None,
     auto_memory_path: str | None = None,
 ) -> dict:
@@ -1714,6 +1715,18 @@ def pm_memory_ingest(
       This reduces residual plaintext, it does not securely erase: backups,
       Time Machine, SSD block remapping, and the source ``.md`` notes are all
       untouched.
+    redact (default True, PMSERV-168): scrub high-severity credential patterns
+      (AWS keys, GitHub/Slack tokens, private-key headers, …) out of a note's
+      body before it is hashed and indexed. The ADR-045 gate guards WHOSE
+      notes get published; this guards WHAT is in them. Ingest is the moment a
+      credential written in one repo's notes becomes searchable from every
+      other repo. Only the ``secret`` category is scrubbed — stripping paths,
+      IPs or ticket refs would leave hits nobody can act on, and those match
+      ordinary prose besides. What was scrubbed is reported as per-category
+      counts in ``redacted_files``; the matched text is never echoed back.
+      Pass ``redact=false`` to index notes verbatim. Note the scrub applies to
+      the derived index only: the source ``.md`` still holds the credential,
+      so a real leak still has to be rotated.
 
     Writes only the derived global index, never a project's ledger
     (``pm_remember`` stays the source of truth). Re-running is idempotent:
@@ -1730,7 +1743,10 @@ def pm_memory_ingest(
         }
     store = _get_memory_store(project_path)
     entries, scanned, diagnostics = collect_ingest_entries(
-        project_path, scope=scope, auto_memory_path=auto_memory_path
+        project_path,
+        scope=scope,
+        auto_memory_path=auto_memory_path,
+        redact_secrets_enabled=redact,
     )
 
     if purge:
@@ -1908,6 +1924,25 @@ def pm_memory_ingest(
                 remediation=(
                     'scope="project" で対象を絞って実行するか、'
                     "不要になった auto-memory ノートを整理してから再実行してください。"
+                ),
+            )
+        )
+    if diagnostics.get("redacted_files"):
+        redacted = diagnostics["redacted_files"]
+        result["redacted_files"] = redacted
+        total = sum(sum(d["by_category"].values()) for d in redacted)
+        result.setdefault("warnings", []).append(
+            _build_warning(
+                level="warning",
+                code="auto_memory_secrets_redacted",
+                message=(
+                    f"認証情報らしき {total} 箇所を {len(redacted)} 件のノートから"
+                    f"除去して索引しました（索引側のみ。検出内容は件数だけ報告します）。"
+                ),
+                remediation=(
+                    "元の .md には認証情報が残っています。実際に有効な鍵であれば"
+                    "ローテーションしてください。索引を verbatim にしたい場合は "
+                    "redact=false を指定します。"
                 ),
             )
         )

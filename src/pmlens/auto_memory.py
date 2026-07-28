@@ -38,6 +38,7 @@ from pathlib import Path
 import yaml
 
 from .models import ProjectNotFoundError
+from .redaction import redact_secrets
 from .utils import _atomic_write_text, resolve_project_path
 
 # ─── Constants ───────────────────────────────────────
@@ -453,6 +454,7 @@ def collect_ingest_entries(
     scope: str = "project",
     auto_memory_path: str | None = None,
     home: Path | None = None,
+    redact_secrets_enabled: bool = True,
 ) -> tuple[list[dict], list[Path], dict]:
     """Gather full-content auto-memory notes for physical ingest.
 
@@ -480,6 +482,18 @@ def collect_ingest_entries(
     as new on every run). When encoding drift gives one repo several
     directories, entries are deduplicated per ``(project_path, basename)``
     keeping the newest note.
+
+    ``redact_secrets_enabled`` (PMSERV-168, default on) scrubs high-severity
+    credential patterns out of the body before it is hashed and indexed. The
+    ADR-045 gate guards *scope* — whose notes may be published — and is silent
+    about their contents; this is the content half. Ingest is the moment a
+    credential written in one repo's notes becomes searchable from every other
+    repo, and auto-memory notes are free-form text nobody wrote expecting an
+    index. Only the ``secret`` category is touched: scrubbing paths, IPs or
+    ticket refs would strip an index on the user's own machine of the very
+    identifiers that make a hit actionable. What was scrubbed is reported in
+    ``diagnostics["redacted_files"]`` as per-category COUNTS — never the
+    matched text, which would republish the secret in the report.
     """
     if scope not in INGEST_SCOPES:
         raise ValueError(f"scope must be one of {INGEST_SCOPES}, got {scope!r}")
@@ -514,6 +528,7 @@ def collect_ingest_entries(
     skipped_files: list[str] = []
     oversized: list[dict] = []
     over_budget: list[str] = []
+    redacted: list[dict] = []
     budget_used = 0
     now = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
     for mem_dir in dirs:
@@ -558,6 +573,17 @@ def collect_ingest_entries(
             if entry is None:  # MEMORY.md (the derived index) or unreadable
                 continue
             budget_used += size
+            # Content gate (PMSERV-168). The ADR-045 gate guards SCOPE — whose
+            # notes get published — and says nothing about what is in them.
+            # Ingest is the moment a credential written in one repo's notes
+            # becomes searchable from every other repo, so scrub it here,
+            # BEFORE the hash: hashing the raw body would make the stored row
+            # and its idempotency key disagree about what was indexed.
+            if redact_secrets_enabled:
+                scrubbed, counts = redact_secrets(entry.get("content") or "")
+                if counts:
+                    entry["content"] = scrubbed
+                    redacted.append({"path": str(f), "by_category": counts})
             body = entry.get("content") or ""
             entry["source_path"] = str(f)
             entry["origin_dir"] = origin_dir
@@ -583,6 +609,7 @@ def collect_ingest_entries(
         "skipped_files": skipped_files,
         "oversized_files": oversized,
         "over_budget_files": over_budget,
+        "redacted_files": redacted,
         "bytes_read": budget_used,
         # Files that EXIST but were not read this run. Pruning treats "not in
         # entries" as "the file is gone" and deletes the row (memory.py's

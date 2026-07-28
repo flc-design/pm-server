@@ -265,6 +265,43 @@ def _redact_text(
     return text, counts
 
 
+def redact_secrets(text: str) -> tuple[str, dict[str, int]]:
+    """Scrub ONLY the high-severity credential patterns. Returns (text, counts).
+
+    A deliberately narrower pass than :func:`redact` (PMSERV-168), for content
+    crossing a boundary that is not publication. Ingest copies auto-memory
+    notes into ``~/.pm/memory.db``, which every project can search — so a
+    credential written in one repo's notes becomes readable while working in
+    another. That is the risk worth scrubbing.
+
+    The other categories are deliberately left alone. ``redact`` scrubs them
+    because a public post must not carry an absolute path, an internal ticket
+    ID or an email; an index on the user's own machine must, or it stops being
+    useful — auto-memory notes are largely made of paths and ticket refs, and
+    PMSERV-170 exists precisely because that identity carries meaning. Scrub
+    them here and cross-project search would return rows nobody can act on.
+
+    The ``secret`` patterns are tightly anchored (``AKIA[0-9A-Z]{16}``,
+    ``xox[baprs]-…``), so the false-positive cost of scrubbing them by default
+    is low — unlike ``email`` or ``ip``, which match ordinary prose.
+
+    Counts are by category and carry no cleartext, matching
+    :class:`RedactionResult`'s report discipline: a report that quotes the
+    secret to prove it found one has published it again.
+    """
+    counts: dict[str, int] = {}
+    for pat in _PATTERNS:
+        if pat.category != "secret":
+            continue
+
+        def _sub(m: re.Match[str], _pat: _Pattern = pat) -> str:
+            counts[_pat.category] = counts.get(_pat.category, 0) + 1
+            return _pat.placeholder
+
+        text = pat.regex.sub(_sub, text)
+    return text, counts
+
+
 def _severity_of(category: str) -> _Severity:
     for pat in _PATTERNS:
         if pat.category == category:

@@ -312,6 +312,19 @@ dataclasses, atomic-write helpers).
 | `pm_memory_ingest` | Index Claude Code auto-memory notes into the cross-project index (`scope="project"` by default; a run that would index notes beyond this project's own store — `scope="all"` or an `auto_memory_path` override — is refused unless `force=true`; `purge=true` undoes it, `vacuum=true` also reclaims the bytes) |
 | `pm_memory_cleanup` | Clean up old memories / prune session summaries (`summaries_keep_latest=N`, keeps every branch's latest context; dry-run supported) |
 
+**Credentials are scrubbed on the way into the index.** Ingest is the moment a
+note written in one repo becomes searchable from every other repo, and
+auto-memory notes are free-form text nobody wrote expecting an index. High-
+severity credential patterns (AWS keys, GitHub/Slack tokens, private-key
+headers, …) are removed from the indexed copy by default and reported as
+per-category counts — never echoed back. `redact=false` indexes verbatim.
+
+Only the credential category is touched. Paths, IP addresses and ticket
+references stay: an index on your own machine that has lost them returns hits
+nobody can act on. And the scrub applies to the **derived index only** — the
+source `.md` still holds the credential, so a real leak still has to be
+rotated.
+
 **Deleting large rows can leave the text in the file.** Measured, because the
 general version of this claim is wrong: a row small enough to fit in one SQLite
 page is rewritten in place and the WAL checkpoint copies the post-delete

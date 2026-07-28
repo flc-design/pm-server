@@ -622,6 +622,104 @@ class TestPurgeVacuum:
         assert result["vacuumed"] is True
 
 
+#: A syntactically valid AWS access key id. Fake, but it matches the anchored
+#: `AKIA[0-9A-Z]{16}` pattern, which is the point.
+_FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+class TestSecretRedactionGate:
+    """PMSERV-168: the content half of the ingest gate.
+
+    ADR-045's fact-based gate asks WHOSE notes are being published. It says
+    nothing about what is in them — so a credential pasted into one repo's
+    auto-memory became searchable from every other repo the moment ingest ran.
+    """
+
+    def test_secrets_are_scrubbed_before_indexing(self, env):
+        home, a, _b, store = env
+        write_note(home, a, "creds.md", f"deploy runbook, key={_FAKE_AWS_KEY} rotate quarterly")
+        entries, scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        assert _FAKE_AWS_KEY not in entries[0]["content"]
+        assert "<REDACTED:secret>" in entries[0]["content"]
+        assert diagnostics["redacted_files"][0]["by_category"] == {"secret": 1}
+
+        store.ingest_auto_memory(entries, scanned)
+        assert store.search_global_ex("AKIAIOSFODNN7EXAMPLE")[0] == [], (
+            "the credential is searchable from every project — the exact "
+            "cross-project exposure this gate exists to prevent"
+        )
+        # The surrounding note stays useful; this is a scrub, not a drop.
+        assert len(store.search_global_ex("runbook")[0]) == 1
+
+    def test_the_report_never_echoes_the_secret(self, env):
+        """A report that quotes the match to prove it found one has published
+        it again — in a field that gets pasted into chat."""
+        home, a, _b, _store = env
+        write_note(home, a, "creds.md", f"key={_FAKE_AWS_KEY}")
+        _entries, _scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        assert _FAKE_AWS_KEY not in repr(diagnostics)
+
+    def test_scrub_happens_before_the_content_hash(self, env):
+        """Hash the raw body and the idempotency key describes something other
+        than what was stored, so a re-ingest looks changed forever."""
+        home, a, _b, store = env
+        write_note(home, a, "creds.md", f"key={_FAKE_AWS_KEY}")
+        store.ingest_auto_memory(*collect(a, home))
+        again = store.ingest_auto_memory(*collect(a, home))
+        assert (again["ingested"], again["unchanged"]) == (0, 1)
+
+    def test_ordinary_identifiers_survive(self, env):
+        """Only the `secret` category is scrubbed. An index on the user's own
+        machine that has lost its paths and ticket refs returns hits nobody can
+        act on — and those patterns match ordinary prose."""
+        home, a, _b, _store = env
+        write_note(
+            home,
+            a,
+            "notes.md",
+            "PMSERV-168 in /Users/dev/proj, host 10.0.0.1, ping dev@example.com",
+        )
+        entries, _scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        body = entries[0]["content"]
+        for keep in ("PMSERV-168", "/Users/dev/proj", "10.0.0.1", "dev@example.com"):
+            assert keep in body, f"{keep!r} was scrubbed — the index loses its usefulness"
+        assert diagnostics["redacted_files"] == []
+
+    def test_redaction_can_be_turned_off(self, env):
+        home, a, _b, _store = env
+        write_note(home, a, "creds.md", f"key={_FAKE_AWS_KEY}")
+        entries, _scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home, redact_secrets_enabled=False
+        )
+        assert _FAKE_AWS_KEY in entries[0]["content"]
+        assert diagnostics["redacted_files"] == []
+
+    def test_tool_warns_and_defaults_to_redacting(self, tmp_path, monkeypatch):
+        from pmlens.models import Project
+        from pmlens.storage import _save_project
+
+        home = tmp_path / "home"
+        (home / ".claude" / "projects").mkdir(parents=True)
+        proj = tmp_path / "proj"
+        (proj / ".pm" / "daily").mkdir(parents=True)
+        _save_project(proj / ".pm", Project(name="proj", display_name="proj"))
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(proj)
+        from pmlens.server import pm_memory_ingest
+
+        write_note(home, proj, "creds.md", f"key={_FAKE_AWS_KEY}")
+        result = pm_memory_ingest(dry_run=False)
+        codes = [w["code"] for w in result.get("warnings", [])]
+        assert "auto_memory_secrets_redacted" in codes
+        assert _FAKE_AWS_KEY not in repr(result)
+
+
 class TestSizeCaps:
     """PMSERV-169: bound what one note, and one sweep, can pull in.
 
