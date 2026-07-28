@@ -622,6 +622,133 @@ class TestPurgeVacuum:
         assert result["vacuumed"] is True
 
 
+class TestSizeCaps:
+    """PMSERV-169: bound what one note, and one sweep, can pull in.
+
+    The caps are deliberately SKIP-not-truncate. A truncated note indexes as a
+    row that looks complete and silently loses whatever came after the cut,
+    which is the same class of failure ingest exists to fix.
+    """
+
+    def _big_note(self, home, project, name, marker):
+        """A note comfortably over the per-note cap."""
+        write_note(home, project, name, marker + " " + ("x" * (auto_memory._MAX_NOTE_BYTES + 1)))
+
+    def test_oversized_note_is_skipped_and_reported(self, env):
+        home, a, _b, _store = env
+        write_note(home, a, "small.md", "SMALLTOKEN")
+        self._big_note(home, a, "huge.md", "HUGETOKEN")
+
+        entries, _scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        assert [e["source_file"] for e in entries] == ["small.md"]
+        assert len(diagnostics["oversized_files"]) == 1
+        assert diagnostics["oversized_files"][0]["path"].endswith("huge.md")
+        assert diagnostics["oversized_files"][0]["bytes"] > auto_memory._MAX_NOTE_BYTES
+
+    def test_oversized_note_is_never_truncated_into_the_index(self, env):
+        home, a, _b, store = env
+        self._big_note(home, a, "huge.md", "HUGETOKEN")
+        store.ingest_auto_memory(*collect(a, home))
+        assert store.search_global_ex("HUGETOKEN")[0] == [], (
+            "an over-cap note must be absent, not partially indexed — a partial "
+            "row looks complete and hides everything after the cut"
+        )
+
+    def test_sweep_budget_stops_reading_and_reports_the_remainder(self, env, monkeypatch):
+        home, a, _b, _store = env
+        monkeypatch.setattr(auto_memory, "_MAX_INGEST_BYTES", 4096)
+        for i in range(6):
+            write_note(home, a, f"n{i}.md", "PAYLOAD" + ("y" * 1500))
+
+        entries, _scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        assert diagnostics["over_budget_files"], "the budget never engaged"
+        assert len(entries) + len(diagnostics["over_budget_files"]) == 6
+        assert diagnostics["bytes_read"] <= 4096
+
+    def test_skipped_note_does_not_lose_its_existing_index_row(self, env, monkeypatch):
+        """The trap this feature would otherwise walk into.
+
+        Pruning treats "absent from entries" as "the file was deleted". A note
+        skipped for size is absent from entries but very much still on disk, so
+        without the protection a size cap would DELETE the good row it already
+        had — a resource guard causing data loss.
+        """
+        home, a, _b, store = env
+        write_note(home, a, "grows.md", "GROWSTOKEN and some content")
+        store.ingest_auto_memory(*collect(a, home))
+        assert len(store.search_global_ex("GROWSTOKEN")[0]) == 1
+
+        # The same note, now over the cap.
+        self._big_note(home, a, "grows.md", "GROWSTOKEN")
+        entries, scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        assert entries == []
+        result = store.ingest_auto_memory(
+            entries, scanned, present_but_skipped=diagnostics["present_but_skipped"]
+        )
+        assert result["pruned"] == 0, "a size-skipped note must not be pruned"
+        assert len(store.search_global_ex("GROWSTOKEN")[0]) == 1, (
+            "the previously indexed row was deleted because the file grew past "
+            "the cap — the guard destroyed the data it was meant to protect"
+        )
+
+    def test_a_genuinely_deleted_note_is_still_pruned(self, env):
+        """The protection must not blunt the real prune."""
+        home, a, _b, store = env
+        write_note(home, a, "gone.md", "GONETOKEN")
+        store.ingest_auto_memory(*collect(a, home))
+        d = home / ".claude" / "projects" / auto_memory.encode_project_dirname(a) / "memory"
+        (d / "gone.md").unlink()
+
+        entries, scanned, diagnostics = auto_memory.collect_ingest_entries(
+            str(a), scope="project", home=home
+        )
+        result = store.ingest_auto_memory(
+            entries, scanned, present_but_skipped=diagnostics["present_but_skipped"]
+        )
+        assert result["pruned"] == 1
+        assert store.search_global_ex("GONETOKEN")[0] == []
+
+    def test_tool_warns_about_oversized_notes(self, tmp_path, monkeypatch):
+        from pmlens.models import Project
+        from pmlens.storage import _save_project
+
+        home = tmp_path / "home"
+        (home / ".claude" / "projects").mkdir(parents=True)
+        proj = tmp_path / "proj"
+        (proj / ".pm" / "daily").mkdir(parents=True)
+        _save_project(proj / ".pm", Project(name="proj", display_name="proj"))
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(proj)
+        from pmlens.server import pm_memory_ingest
+
+        write_note(home, proj, "huge.md", "H" * (auto_memory._MAX_NOTE_BYTES + 1))
+        result = pm_memory_ingest(dry_run=False)
+        codes = [w["code"] for w in result.get("warnings", [])]
+        assert "auto_memory_notes_oversized" in codes, (
+            "skipping silently leaves a hole in cross-project search that looks "
+            "exactly like a topic nobody wrote about"
+        )
+        assert result["oversized_files"]
+
+    def test_overlay_read_is_also_bounded(self, env):
+        """parse_auto_memory_file's own guard protects the read-time overlay,
+        which reads whole files too even though it excerpts the output."""
+        home, a, _b, _store = env
+        d = home / ".claude" / "projects" / auto_memory.encode_project_dirname(a) / "memory"
+        d.mkdir(parents=True, exist_ok=True)
+        big = d / "huge.md"
+        big.write_text("x" * (auto_memory._MAX_NOTE_BYTES + 1), encoding="utf-8")
+        assert auto_memory.parse_auto_memory_file(big) is None
+        # …and the cap is opt-out for callers that have already measured.
+        assert auto_memory.parse_auto_memory_file(big, max_bytes=None) is not None
+
+
 class TestUnregisteredDisplayName:
     """PMSERV-170: the encoded dir name must not be the user-facing label.
 

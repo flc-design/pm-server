@@ -1106,6 +1106,7 @@ class MemoryStore:
         entries: list[dict],
         scanned_dirs: list[Path],
         dry_run: bool = False,
+        present_but_skipped: list[str] | None = None,
     ) -> dict:
         """Index Claude Code auto-memory notes into the global index.
 
@@ -1120,6 +1121,13 @@ class MemoryStore:
         and ``memory_index_ad`` (after delete) triggers. An ``UPDATE`` of
         ``content`` would leave the FTS row holding the previous text — a
         silent search inconsistency with no error anywhere.
+
+        ``present_but_skipped`` lists source files that exist on disk but were
+        deliberately not read this run — over the PMSERV-169 size caps, or
+        unparseable. They are exempt from pruning: "absent from entries"
+        otherwise reads as "the file is gone", and a resource guard that
+        deletes the index rows of the notes it declined to re-read would be
+        strictly worse than having no guard.
 
         Pruning is scoped to ``scanned_dirs``: a row survives unless its
         source file lived in a directory this call actually scanned (and the
@@ -1155,6 +1163,7 @@ class MemoryStore:
 
         scanned = {str(Path(d).resolve()) for d in scanned_dirs}
         by_path = {e["source_path"]: e for e in entries}
+        protected = {str(p) for p in (present_but_skipped or ())}
 
         def _plan(executor) -> tuple[list[int], list[int], list[dict], int]:
             existing: dict[str, tuple[int, str | None]] = {}
@@ -1171,7 +1180,16 @@ class MemoryStore:
                 src = row[1] or ""
                 if str(Path(src).parent) in scanned:
                     existing[src] = (row[0], row[2])
-            stale = [rid for src, (rid, _h) in existing.items() if src not in by_path]
+            # "Not in entries" normally means the file is gone. It can also
+            # mean the collector refused to read it this run — an over-cap note
+            # (PMSERV-169) or one that failed to parse. Those files still
+            # exist, so pruning their rows would delete a good index entry as a
+            # side effect of a resource guard.
+            stale = [
+                rid
+                for src, (rid, _h) in existing.items()
+                if src not in by_path and src not in protected
+            ]
             replace: list[int] = []
             to_write: list[dict] = []
             unchanged = 0

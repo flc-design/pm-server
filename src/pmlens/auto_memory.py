@@ -63,6 +63,23 @@ _AUTO_MEMORY_MAX_ENTRIES = 10
 _AUTO_MEMORY_CONTENT_LIMIT = 500
 _POINTER_EXCERPT_LIMIT = 100
 
+#: Resource ceilings for reading auto-memory notes (PMSERV-169). Ingest reads
+#: every note in full — truncating would make anything past the cut silently
+#: unsearchable — so nothing bounded how much a single file, or one sweep,
+#: could pull into memory and into the index.
+#:
+#: Both are enforced by ``stat()`` BEFORE the read. Checking the length after
+#: ``read_text`` would report the problem accurately and still have allocated
+#: the file first, which is the thing being guarded against.
+#:
+#: Over-cap notes are SKIPPED, never truncated: a partially indexed note is a
+#: silent gap in search completeness, and the whole reason ingest exists is
+#: that a gap nobody is told about is worse than a missing feature. Every skip
+#: is reported, and a skipped note's existing row is protected from pruning —
+#: the file is still on disk, it just was not re-read this run.
+_MAX_NOTE_BYTES = 1024 * 1024  # 1 MiB per note
+_MAX_INGEST_BYTES = 32 * 1024 * 1024  # 32 MiB per sweep
+
 # Claude Code encodes a project's absolute path into its
 # ``~/.claude/projects/<name>`` directory name by replacing path punctuation
 # with ``-``. The exact rule has drifted across CC versions (so the same repo
@@ -260,7 +277,10 @@ def _truncate(text: str, limit: int) -> tuple[str, bool]:
 
 
 def parse_auto_memory_file(
-    path: Path, *, content_limit: int | None = _AUTO_MEMORY_CONTENT_LIMIT
+    path: Path,
+    *,
+    content_limit: int | None = _AUTO_MEMORY_CONTENT_LIMIT,
+    max_bytes: int | None = _MAX_NOTE_BYTES,
 ) -> dict | None:
     """Parse one auto-memory ``*.md`` file into an overlay-entry dict.
 
@@ -277,9 +297,22 @@ def parse_auto_memory_file(
     for the untruncated body. The ingest path (PMSERV-156) needs the full text
     — indexing a 500-character excerpt would make the FTS row silently
     unsearchable for anything said later in the note.
+
+    ``max_bytes`` (PMSERV-169) refuses a note larger than the cap, checked via
+    ``stat()`` before the read rather than after: reading first and complaining
+    about the length afterwards has already done the allocation. ``None``
+    disables the check. Returning ``None`` here is indistinguishable from the
+    other skip reasons, which is why :func:`collect_ingest_entries` measures
+    the size itself — it needs to tell the caller WHICH note it dropped.
     """
     if path.name == MEMORY_INDEX_FILENAME:
         return None
+    if max_bytes is not None:
+        try:
+            if path.stat().st_size > max_bytes:
+                return None
+        except OSError:  # pragma: no cover — defensive FS guard
+            return None
     try:
         # utf-8-sig strips a leading BOM (else _split_frontmatter's ``---``
         # probe fails and all frontmatter is lost); errors="replace" keeps a
@@ -479,6 +512,9 @@ def collect_ingest_entries(
     scanned: list[Path] = []
     unreadable: list[str] = []
     skipped_files: list[str] = []
+    oversized: list[dict] = []
+    over_budget: list[str] = []
+    budget_used = 0
     now = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
     for mem_dir in dirs:
         try:
@@ -500,13 +536,28 @@ def collect_ingest_entries(
             name = unregistered_display_name(origin_dir, fallback_root)
         for fname in names:
             f = mem_dir / fname
+            # Size is measured here, not left to parse_auto_memory_file's own
+            # guard, because the caller has to be told WHICH note was dropped
+            # and why — parse returns a bare None for every skip reason.
             try:
-                entry = parse_auto_memory_file(f, content_limit=None)
+                size = f.stat().st_size
+            except OSError:
+                skipped_files.append(str(f))
+                continue
+            if size > _MAX_NOTE_BYTES:
+                oversized.append({"path": str(f), "bytes": size})
+                continue
+            if budget_used + size > _MAX_INGEST_BYTES:
+                over_budget.append(str(f))
+                continue
+            try:
+                entry = parse_auto_memory_file(f, content_limit=None, max_bytes=None)
             except Exception:  # noqa: BLE001 — one bad file must not abort the sweep
                 skipped_files.append(str(f))
                 continue
             if entry is None:  # MEMORY.md (the derived index) or unreadable
                 continue
+            budget_used += size
             body = entry.get("content") or ""
             entry["source_path"] = str(f)
             entry["origin_dir"] = origin_dir
@@ -527,7 +578,19 @@ def collect_ingest_entries(
             prev["source_path"],
         ):
             deduped[key] = e
-    diagnostics = {"unreadable_dirs": unreadable, "skipped_files": skipped_files}
+    diagnostics = {
+        "unreadable_dirs": unreadable,
+        "skipped_files": skipped_files,
+        "oversized_files": oversized,
+        "over_budget_files": over_budget,
+        "bytes_read": budget_used,
+        # Files that EXIST but were not read this run. Pruning treats "not in
+        # entries" as "the file is gone" and deletes the row (memory.py's
+        # `stale`), so without this a size cap would silently drop the
+        # already-good index rows of exactly the notes it refused to re-read —
+        # turning a resource guard into data loss.
+        "present_but_skipped": [d["path"] for d in oversized] + over_budget + skipped_files,
+    }
     return list(deduped.values()), scanned, diagnostics
 
 

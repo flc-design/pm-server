@@ -13,6 +13,8 @@ from fastmcp import FastMCP
 
 from . import storage as _storage
 from .auto_memory import (
+    _MAX_INGEST_BYTES,
+    _MAX_NOTE_BYTES,
     INGEST_SCOPES,
     build_auto_memory_overlay,
     collect_ingest_entries,
@@ -1809,7 +1811,12 @@ def pm_memory_ingest(
         }
         return result
 
-    result = store.ingest_auto_memory(entries, scanned, dry_run=dry_run)
+    result = store.ingest_auto_memory(
+        entries,
+        scanned,
+        dry_run=dry_run,
+        present_but_skipped=diagnostics.get("present_but_skipped"),
+    )
     result["scope"] = scope
     result["notes_found"] = len(entries)
     if foreign:
@@ -1864,6 +1871,46 @@ def pm_memory_ingest(
         )
     if diagnostics.get("skipped_files"):
         result["skipped_files"] = diagnostics["skipped_files"]
+    # A skipped note is a hole in cross-project search that nothing else
+    # reveals: the row is simply absent, and an absent row looks exactly like
+    # a topic nobody wrote about. Skipping without saying so would reproduce
+    # the failure this whole feature exists to prevent (PMSERV-169).
+    if diagnostics.get("oversized_files"):
+        oversized = diagnostics["oversized_files"]
+        result["oversized_files"] = oversized
+        biggest = max(d["bytes"] for d in oversized)
+        result.setdefault("warnings", []).append(
+            _build_warning(
+                level="warning",
+                code="auto_memory_notes_oversized",
+                message=(
+                    f"サイズ上限（{_MAX_NOTE_BYTES // 1024} KiB/ノート）を超える "
+                    f"{len(oversized)} 件を索引せずにスキップしました"
+                    f"（最大 {biggest // 1024} KiB）。該当ノートは横断検索に出ません。"
+                ),
+                remediation=(
+                    "内容を分割するか、そのノートを pm_remember に転記してください。"
+                    "既存の索引行は保護されており削除されていません。"
+                ),
+            )
+        )
+    if diagnostics.get("over_budget_files"):
+        over = diagnostics["over_budget_files"]
+        result["over_budget_files"] = over
+        result.setdefault("warnings", []).append(
+            _build_warning(
+                level="warning",
+                code="auto_memory_ingest_budget_exhausted",
+                message=(
+                    f"1 回の取り込み上限（{_MAX_INGEST_BYTES // (1024 * 1024)} MiB）に達したため "
+                    f"{len(over)} 件を索引していません。"
+                ),
+                remediation=(
+                    'scope="project" で対象を絞って実行するか、'
+                    "不要になった auto-memory ノートを整理してから再実行してください。"
+                ),
+            )
+        )
     if "error" in result:
         result["status"] = "error"
     return result
