@@ -334,6 +334,38 @@ def parse_auto_memory_file(
 INGEST_SCOPES = ("project", "all")
 
 
+def unregistered_display_name(origin_dir: str, project_root: str | None = None) -> str:
+    """Human-facing label for an auto-memory store with no registered project.
+
+    PMSERV-170. The fallback used to be the encoded directory name itself —
+    ``-Users-alice-clients-acme-portal`` — which lands in the ``project``
+    column and is therefore quoted back in cross-project search results and in
+    ``warnings[]`` project lists. That discloses the directory layout (client
+    names included) independently of anything the notes say.
+
+    Two cases, and the first is exact rather than a guess:
+
+    * ``project_root`` known — the store belongs to THIS project, so its
+      basename is the real directory name. Registration is what pm-server
+      lacks here, not knowledge of the path.
+    * ``project_root`` unknown (a ``scope="all"`` sweep over someone else's
+      unregistered store) — the encoding maps every non-alphanumeric character
+      to ``-``, so the basename cannot be recovered: ``-`` is both separator
+      and content. Keep the last two segments as a hint and mark it clearly,
+      e.g. ``unregistered:portal`` or ``unregistered:acme-portal``.
+
+    This narrows incidental disclosure in prose; it is not redaction. The row's
+    ``project_path`` still carries the full value, deliberately — it is what a
+    project-scoped purge targets, and rounding it would break the undo.
+    """
+    if project_root:
+        base = Path(project_root).name
+        if base:
+            return base
+    tail = [seg for seg in origin_dir.split("-") if seg][-2:]
+    return f"unregistered:{'-'.join(tail)}" if tail else "unregistered"
+
+
 def _registry_lookup(home: Path | None = None) -> dict[str, tuple[str, str]]:
     """Map ``~/.claude/projects`` dir name -> (project name, project path).
 
@@ -457,7 +489,15 @@ def collect_ingest_entries(
             continue
         scanned.append(mem_dir)
         origin_dir = mem_dir.parent.name
-        name, path = registry.get(origin_dir, (origin_dir, fallback_root or str(mem_dir.parent)))
+        # Registered projects keep their own name. Unregistered ones used to
+        # fall back to the ENCODED directory name, i.e. a near-reversible
+        # absolute path, in the field most likely to be quoted back to a user
+        # (PMSERV-170). project_path is unchanged — purge targets it.
+        if origin_dir in registry:
+            name, path = registry[origin_dir]
+        else:
+            path = fallback_root or str(mem_dir.parent)
+            name = unregistered_display_name(origin_dir, fallback_root)
         for fname in names:
             f = mem_dir / fname
             try:

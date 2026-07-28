@@ -622,6 +622,66 @@ class TestPurgeVacuum:
         assert result["vacuumed"] is True
 
 
+class TestUnregisteredDisplayName:
+    """PMSERV-170: the encoded dir name must not be the user-facing label.
+
+    ``project`` is quoted back in cross-project search results and in
+    warnings[] project lists. Defaulting it to the encoded directory name
+    published the directory layout — client names and all — independently of
+    anything the notes contained.
+    """
+
+    def test_known_root_uses_the_real_basename_not_the_encoding(self):
+        name = auto_memory.unregistered_display_name(
+            "-Users-alice-clients-acme-portal", "/Users/alice/clients/acme_portal"
+        )
+        assert name == "acme_portal", (
+            "when the real project root is known the basename is exact — no "
+            "reason to fall back to a guess, let alone to the encoded path"
+        )
+
+    def test_unknown_root_is_marked_and_trimmed(self):
+        name = auto_memory.unregistered_display_name("-Users-alice-clients-acme-portal")
+        assert name == "unregistered:acme-portal"
+        # The point of the exercise: the rest of the path is gone.
+        assert "alice" not in name
+        assert "clients" not in name
+
+    def test_degenerate_encodings_do_not_crash(self):
+        assert auto_memory.unregistered_display_name("-") == "unregistered"
+        assert auto_memory.unregistered_display_name("") == "unregistered"
+        assert auto_memory.unregistered_display_name("solo") == "unregistered:solo"
+
+    def test_project_scope_labels_rows_with_the_repo_name(self, env):
+        """The un-overridden project scope always knows its own root, so an
+        unregistered repo still gets a readable label."""
+        home, a, _b, store = env
+        write_note(home, a, "a1.md", "LABELTOKEN")
+        entries, scanned = collect(a, home)
+        assert entries[0]["project"] == a.name
+        assert "-Users-" not in entries[0]["project"]
+        # project_path stays exact — a project-scoped purge targets it.
+        assert entries[0]["project_path"] == str(a)
+
+    def test_foreign_store_in_scope_all_is_labelled_unregistered(self, env):
+        home, a, b, store = env
+        write_note(home, a, "a1.md", "MINETOKEN")
+        write_note(home, b, "b1.md", "THEIRSTOKEN")
+        entries, _scanned = collect(a, home, scope="all")
+        labels = {e["project"] for e in entries}
+        assert all(
+            not label.startswith("-Users") and not label.startswith("-private") for label in labels
+        ), f"an encoded absolute path is still used as a display name: {labels}"
+        foreign = [e for e in entries if "THEIRSTOKEN" in (e.get("content") or "")]
+        assert foreign and foreign[0]["project"].startswith("unregistered:")
+        # …while the exact identity survives where purge needs it: project_path
+        # still names the store's own directory, so a targeted purge resolves.
+        assert foreign[0]["project_path"].endswith(auto_memory.encode_project_dirname(b)), (
+            "project_path must keep identifying the store exactly — rounding it "
+            f"would break purge targeting (got {foreign[0]['project_path']!r})"
+        )
+
+
 class TestIndexRowShape:
     def test_created_at_matches_ledger_format_and_is_not_future(self, env):
         """Ledger rows use SQLite datetime('now') — UTC, space-separated. The
