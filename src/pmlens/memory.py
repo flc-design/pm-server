@@ -1259,6 +1259,7 @@ class MemoryStore:
         scanned_dirs: list[Path] | None = None,
         project_root: Path | str | None = None,
         dry_run: bool = False,
+        vacuum: bool = False,
     ) -> dict:
         """Remove ingested auto-memory rows from the global index.
 
@@ -1278,9 +1279,34 @@ class MemoryStore:
         touched, and DELETE (not UPDATE) keeps the external-content FTS in
         sync via ``memory_index_ad``. The match and the DELETE share one
         ``BEGIN IMMEDIATE`` transaction; ``dry_run`` reads under a plain
-        transaction and performs no schema work at all. Deleted rows are a
-        logical removal: like every DELETE in this store, the bytes remain in
-        SQLite free pages until a VACUUM the store never runs.
+        transaction and performs no schema work at all.
+
+        DELETE can leave the row's text readable in the file (PMSERV-171), but
+        only for LARGE rows — this was measured rather than assumed, because
+        the general claim is false. A row that fits in one SQLite page is
+        rewritten in place and the WAL checkpoint copies the post-delete
+        version over the original, so nothing survives. A row that spills onto
+        **overflow pages** (roughly past ~4 KB) is different: those pages
+        return to the freelist *without* being rewritten, so their contents
+        stay in the file until something rebuilds it. Free-form auto-memory
+        notes routinely clear that bar, which is precisely the content purge
+        exists to take back.
+
+        ``vacuum=True`` follows the DELETE with ``VACUUM`` (rebuilds the file,
+        so free pages are not carried over) and
+        ``PRAGMA wal_checkpoint(TRUNCATE)`` (drops the WAL's copy). It runs
+        AFTER the commit — VACUUM cannot execute inside a transaction — and is
+        skipped entirely on ``dry_run`` and when nothing matched. VACUUM needs
+        an exclusive lock, so a concurrent session can make it fail; that is
+        reported in ``vacuum_error`` and does NOT fail the purge, because the
+        rows really are gone and pretending otherwise would push callers to
+        re-run a destructive operation. ``vacuumed`` says what actually
+        happened.
+
+        This reduces residual plaintext; it does not securely erase it. Copies
+        outside this file — backups, Time Machine, an SSD's remapped blocks,
+        an earlier ``.bak``, the source ``.md`` notes themselves — are
+        untouched. Treat it as hygiene, not as a guarantee.
         """
         count_key = "would_purge" if dry_run else "purged"
         result: dict = {count_key: 0, "projects": [], "dry_run": dry_run}
@@ -1330,6 +1356,27 @@ class MemoryStore:
             except BaseException:
                 conn.rollback()
                 raise
+
+            # After the commit, never inside it: VACUUM cannot run in a
+            # transaction. Nothing was deleted on a dry run or an empty match,
+            # so there is nothing to reclaim and no reason to take an
+            # exclusive lock.
+            if vacuum and not dry_run and matched:
+                result["vacuumed"] = False
+                try:
+                    conn.execute("VACUUM")
+                    # VACUUM rebuilds the main file, but in WAL mode it does so
+                    # THROUGH the WAL — and the pre-purge pages may still be
+                    # sitting there too. Truncating is what actually drops
+                    # them; without this the sidecar keeps the plaintext the
+                    # caller asked to be rid of.
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    result["vacuumed"] = True
+                except sqlite3.Error as exc:
+                    # The purge itself succeeded. Reporting this as an error
+                    # would invite a re-run of a destructive operation to fix
+                    # a reclamation step.
+                    result["vacuum_error"] = f"{type(exc).__name__}: {exc}"
             return result
         except (sqlite3.Error, OSError) as exc:
             result["error"] = f"{type(exc).__name__}: {exc}"

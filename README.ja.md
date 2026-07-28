@@ -301,8 +301,34 @@ pmlens uninstall --target auto
 | `pm_session_summary` | セッション要約の保存・取得・一覧 |
 | `pm_memory_search` | type・tag・task_id フィルター付き高度な検索 |
 | `pm_memory_stats` | メモリ DB の統計情報（件数・種別・DB サイズ） |
-| `pm_memory_ingest` | Claude Code の auto-memory ノートを横断検索インデックスへ取り込み（既定は `scope="project"`。現プロジェクト外のノートが対象になる実行（`scope="all"` や `auto_memory_path` 指定）は `force=true` なしでは拒否。`purge=true` で取り消し） |
+| `pm_memory_ingest` | Claude Code の auto-memory ノートを横断検索インデックスへ取り込み（既定は `scope="project"`。現プロジェクト外のノートが対象になる実行（`scope="all"` や `auto_memory_path` 指定）は `force=true` なしでは拒否。`purge=true` で取り消し、`vacuum=true` で実体も回収） |
 | `pm_memory_cleanup` | 古い記憶のクリーンアップ / セッション要約の剪定（`summaries_keep_latest=N`、各ブランチの最新文脈は保護。dry-run 対応） |
+
+**大きな行を削除すると、本文がファイルに残ることがあります。** 実測に基づく記述です
+（一般化した「削除しても全部残る」は誤りでした）。1 ページに収まる小さい行は、削除後の
+ページが WAL の checkpoint で元のページを**上書き**するため、読める形では何も残りません。
+一方 **overflow ページ**に載るほど大きい行（目安として 4KB 超）は違います。overflow
+ページは**上書きされずに**フリーリストへ返されるため、その中身は
+`~/.pm/memory.db` が作り直されるまで残ります。
+
+auto-memory ノートは自由記述なので、この閾値を日常的に超えます。したがって効いてくるのは
+**「取り込んだノートに秘密情報や個人情報が含まれていたと後から気づいて purge した」**
+場面です。索引はもうヒットしませんが、ファイルを `grep` すると本文の大半が読めます。
+
+その用途に `pm_memory_ingest(purge=true, vacuum=true)` を用意しました。削除後に
+`VACUUM` と WAL の truncate を行い、残留を除去します。既定は OFF です — 排他ロックを
+取ってファイル全体を書き直すため、スコープを直すだけの日常的な purge には割に合いません。
+並行セッションに阻まれた場合も purge 自体は成功し、応答に `vacuum_error` が付くだけです
+（行は確実に消えています）。
+
+**これは衛生管理であって、セキュアな消去ではありません。** 対象は
+`~/.pm/memory.db` のみです。バックアップ・Time Machine・SSD の再マッピング済みブロック、
+そして**元の `.md` ノート自体**は一切触りません。ノートが原本である以上、
+漏れた秘密情報のローテーションは別途必要です。
+
+なお `PRAGMA secure_delete` をグローバルに設定する案は**採用していません**。
+取り込みコンテンツ固有のリスクのために全ユーザーが全削除で書き込みコストを払うことになり、
+しかも**既に解放済みのページは消えない**ためです。
 
 ### ナレッジレコード
 

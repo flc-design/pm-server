@@ -309,8 +309,36 @@ dataclasses, atomic-write helpers).
 | `pm_session_summary` | Save / get / list session summaries for continuity |
 | `pm_memory_search` | Advanced search with type, tag, and task filters |
 | `pm_memory_stats` | Memory DB statistics (total, by type, DB size) |
-| `pm_memory_ingest` | Index Claude Code auto-memory notes into the cross-project index (`scope="project"` by default; a run that would index notes beyond this project's own store — `scope="all"` or an `auto_memory_path` override — is refused unless `force=true`; `purge=true` undoes it) |
+| `pm_memory_ingest` | Index Claude Code auto-memory notes into the cross-project index (`scope="project"` by default; a run that would index notes beyond this project's own store — `scope="all"` or an `auto_memory_path` override — is refused unless `force=true`; `purge=true` undoes it, `vacuum=true` also reclaims the bytes) |
 | `pm_memory_cleanup` | Clean up old memories / prune session summaries (`summaries_keep_latest=N`, keeps every branch's latest context; dry-run supported) |
+
+**Deleting large rows can leave the text in the file.** Measured, because the
+general version of this claim is wrong: a row small enough to fit in one SQLite
+page is rewritten in place and the WAL checkpoint copies the post-delete
+version over it, so nothing readable survives. A row big enough to spill onto
+**overflow pages** — roughly anything past ~4 KB — is different: those pages go
+back to the freelist *without* being rewritten, and their contents stay in
+`~/.pm/memory.db` until something rebuilds it.
+
+Free-form auto-memory notes routinely clear that bar. So the case that matters
+is: you ingested a note, later realised it contained a secret or personal data,
+and purged it — the index no longer returns it, but a `grep` of the file still
+finds most of it.
+
+`pm_memory_ingest(purge=true, vacuum=true)` follows the delete with a `VACUUM`
+and a WAL truncate, which removes it. It is off by default: it takes an
+exclusive lock and rewrites the whole file, a poor trade for a routine
+scope-fix purge. If a concurrent session blocks it, the purge still succeeds
+and the response carries `vacuum_error` rather than failing — the rows are gone
+either way.
+
+**This is hygiene, not secure erasure.** It only touches `~/.pm/memory.db`.
+Backups, Time Machine snapshots, an SSD's remapped blocks, and the source `.md`
+notes themselves are all untouched — and the note is the original, so a leaked
+secret still has to be rotated. pm-server deliberately does not set
+`PRAGMA secure_delete` globally: it would make every user pay a write cost on
+every delete for a risk specific to ingested content, and it would not clear
+pages that were already freed.
 
 **What "latest" means (ADR-042/043).** Every recency read — `pm_recall` (with or
 without `track`), `pm_session_summary` get/list, and the CLI context injection —

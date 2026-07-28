@@ -517,6 +517,111 @@ class TestPurgeContract:
         assert "auto_memory_purged_all_projects" in codes
 
 
+#: A note body large enough to spill onto SQLite overflow pages. That is the
+#: whole condition under which purged text survives — measured, not assumed:
+#: a row that fits in one page is rewritten in place and the WAL checkpoint
+#: copies the post-delete version over it, leaving nothing. Overflow pages are
+#: released to the freelist WITHOUT being rewritten, so their contents stay in
+#: the file. Free-form auto-memory notes routinely clear this bar.
+_BIG_NOTE_FILLER = "residue-payload-" * 4096  # ~64 KB
+
+
+class TestPurgeVacuum:
+    """PMSERV-171: purge can reclaim the bytes, but only when asked.
+
+    Scope, stated precisely because the imprecise version is tempting: a
+    DELETE does not generally leave readable text behind in this store. In WAL
+    mode the modified page is checkpointed over the original, so small rows
+    vanish for free. What survives is the *overflow* content of large rows,
+    which is freed without being rewritten — and that is exactly the shape of
+    an auto-memory note someone pasted a secret into.
+    """
+
+    def _residue_blocks(self, store) -> int:
+        """How many payload blocks are still readable in the index file + WAL."""
+        blob = b""
+        for suffix in ("", "-wal"):
+            path = store.global_db_path.with_name(store.global_db_path.name + suffix)
+            if path.exists():
+                blob += path.read_bytes()
+        return blob.count(b"residue-payload-" * 64)
+
+    def test_default_purge_leaves_the_overflow_bytes_and_says_nothing(self, env):
+        """No vacuum key at all unless asked — the response shape is unchanged
+        for every existing caller — and the residue this feature exists for is
+        asserted rather than assumed."""
+        home, a, _b, store = env
+        write_note(home, a, "a1.md", _BIG_NOTE_FILLER)
+        store.ingest_auto_memory(*collect(a, home))
+
+        result = store.purge_auto_memory(None)
+        assert result["purged"] == 1
+        assert "vacuumed" not in result
+        assert "vacuum_error" not in result
+        assert store.search_global_ex("residue")[0] == []  # gone from the index
+        assert self._residue_blocks(store) > 0, (
+            "a large purged note left no residue at all — if SQLite's behaviour "
+            "changed, vacuum=True may no longer be solving anything and this "
+            "feature's justification should be re-checked, not the assert relaxed"
+        )
+
+    def test_vacuum_removes_the_residual_plaintext(self, env):
+        home, a, _b, store = env
+        write_note(home, a, "a1.md", _BIG_NOTE_FILLER)
+        store.ingest_auto_memory(*collect(a, home))
+
+        result = store.purge_auto_memory(None, vacuum=True)
+        assert result["purged"] == 1
+        assert result["vacuumed"] is True
+        assert "vacuum_error" not in result
+        assert store.search_global_ex("residue")[0] == []
+        assert self._residue_blocks(store) == 0, (
+            "vacuum=True must leave no readable copy in the index file or its "
+            "WAL sidecar — truncating the WAL is the half that is easy to omit"
+        )
+
+    def test_dry_run_never_vacuums(self, env):
+        """dry_run is a pure preview (PMSERV-156). vacuum must not break that:
+        VACUUM rewrites the file, which is the least pure thing here."""
+        home, a, _b, store = env
+        write_note(home, a, "a1.md", _BIG_NOTE_FILLER)
+        store.ingest_auto_memory(*collect(a, home))
+
+        result = store.purge_auto_memory(None, dry_run=True, vacuum=True)
+        assert result["would_purge"] == 1
+        assert "vacuumed" not in result
+        # Nothing was deleted, so the row must still be there.
+        assert len(store.search_global_ex("residue")[0]) == 1
+
+    def test_no_match_does_not_take_an_exclusive_lock(self, env):
+        """Nothing was deleted, so there is nothing to reclaim. Running VACUUM
+        anyway would rewrite the whole file for no reason and could fail on a
+        concurrent session."""
+        home, a, _b, store = env
+        result = store.purge_auto_memory(None, vacuum=True)
+        assert result["purged"] == 0
+        assert "vacuumed" not in result
+
+    def test_tool_exposes_vacuum(self, tmp_path, monkeypatch):
+        from pmlens.models import Project
+        from pmlens.storage import _save_project
+
+        home = tmp_path / "home"
+        (home / ".claude" / "projects").mkdir(parents=True)
+        proj = tmp_path / "proj"
+        (proj / ".pm" / "daily").mkdir(parents=True)
+        _save_project(proj / ".pm", Project(name="proj", display_name="proj"))
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(proj)
+        from pmlens.server import pm_memory_ingest
+
+        write_note(home, proj, "mine.md", "TOOLVACUUMTOKEN")
+        pm_memory_ingest(dry_run=False)
+        result = pm_memory_ingest(purge=True, dry_run=False, vacuum=True)
+        assert result["purged"] == 1
+        assert result["vacuumed"] is True
+
+
 class TestIndexRowShape:
     def test_created_at_matches_ledger_format_and_is_not_future(self, env):
         """Ledger rows use SQLite datetime('now') — UTC, space-separated. The

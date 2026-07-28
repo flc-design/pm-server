@@ -1661,6 +1661,7 @@ def pm_memory_ingest(
     dry_run: bool = True,
     force: bool = False,
     purge: bool = False,
+    vacuum: bool = False,
     project_path: str | None = None,
     auto_memory_path: str | None = None,
 ) -> dict:
@@ -1694,6 +1695,23 @@ def pm_memory_ingest(
       directory vanished), scope="all" removes every ingested row. Ledger
       rows (source='pm') are never touched. Purge is never gated: it is the
       undo the gate's remediation points at.
+    vacuum (purge only, PMSERV-171): after deleting, rebuild the global index
+      file and truncate the ``-wal`` sidecar, so the purged text is not left
+      behind. It can be: a small row is overwritten in place by the WAL
+      checkpoint and leaves nothing, but a row large enough for SQLite
+      overflow pages (past ~4 KB — ordinary for a free-form note) has those
+      pages freed WITHOUT being rewritten, so a grep of the file still finds
+      most of the note after a plain purge. Off by
+      default because it takes an exclusive lock and rewrites the whole file.
+      Reach for it when the purge was prompted by content — a note that turned
+      out to contain a secret or PII — rather than by scope. Ignored on
+      ``dry_run`` and when nothing matched. A concurrent session can make it
+      fail: that is reported as ``vacuum_error`` and the purge still counts as
+      done (``vacuumed`` tells you which happened), because re-running a
+      destructive operation to retry a reclamation step is the wrong repair.
+      This reduces residual plaintext, it does not securely erase: backups,
+      Time Machine, SSD block remapping, and the source ``.md`` notes are all
+      untouched.
 
     Writes only the derived global index, never a project's ledger
     (``pm_remember`` stays the source of truth). Re-running is idempotent:
@@ -1724,6 +1742,7 @@ def pm_memory_ingest(
             None if scope == "all" else scanned,
             project_root=root,
             dry_run=dry_run,
+            vacuum=vacuum,
         )
         result["scope"] = scope
         purged = result.get("purged") or result.get("would_purge") or 0
