@@ -325,13 +325,20 @@ nobody can act on. And the scrub applies to the **derived index only** — the
 source `.md` still holds the credential, so a real leak still has to be
 rotated.
 
-**Deleting large rows can leave the text in the file.** Measured, because the
-general version of this claim is wrong: a row small enough to fit in one SQLite
-page is rewritten in place and the WAL checkpoint copies the post-delete
-version over it, so nothing readable survives. A row big enough to spill onto
-**overflow pages** — roughly anything past ~4 KB — is different: those pages go
-back to the freelist *without* being rewritten, and their contents stay in
-`~/.pm/memory.db` until something rebuilds it.
+**Deleting large rows can leave the text in the file — on some builds.**
+Measured, because both the general claim and its opposite are wrong. A row
+small enough to fit in one SQLite page is rewritten in place and the WAL
+checkpoint copies the post-delete version over it, so nothing readable
+survives anywhere. A row big enough to spill onto **overflow pages** — roughly
+past ~4 KB — depends on how your SQLite was compiled:
+
+| `PRAGMA secure_delete` | Typical build | After a plain purge |
+|---|---|---|
+| `2` (fast) | Apple's system SQLite | freed overflow pages keep their contents |
+| `1` (full) | most Linux distributions | freed pages are zeroed; nothing remains |
+
+So on macOS a purged 64 KB note is still largely readable with `grep`, and on
+a typical Linux box it is not.
 
 Free-form auto-memory notes routinely clear that bar. So the case that matters
 is: you ingested a note, later realised it contained a secret or personal data,
@@ -339,11 +346,11 @@ and purged it — the index no longer returns it, but a `grep` of the file still
 finds most of it.
 
 `pm_memory_ingest(purge=true, vacuum=true)` follows the delete with a `VACUUM`
-and a WAL truncate, which removes it. It is off by default: it takes an
-exclusive lock and rewrites the whole file, a poor trade for a routine
-scope-fix purge. If a concurrent session blocks it, the purge still succeeds
-and the response carries `vacuum_error` rather than failing — the rows are gone
-either way.
+and a WAL truncate, which removes it on either build (and reclaims the file
+size in both cases). It is off by default: it takes an exclusive lock and
+rewrites the whole file, a poor trade for a routine scope-fix purge. If a
+concurrent session blocks it, the purge still succeeds and the response carries
+`vacuum_error` rather than failing — the rows are gone either way.
 
 **This is hygiene, not secure erasure.** It only touches `~/.pm/memory.db`.
 Backups, Time Machine snapshots, an SSD's remapped blocks, and the source `.md`

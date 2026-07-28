@@ -1299,16 +1299,18 @@ class MemoryStore:
         ``BEGIN IMMEDIATE`` transaction; ``dry_run`` reads under a plain
         transaction and performs no schema work at all.
 
-        DELETE can leave the row's text readable in the file (PMSERV-171), but
-        only for LARGE rows — this was measured rather than assumed, because
-        the general claim is false. A row that fits in one SQLite page is
-        rewritten in place and the WAL checkpoint copies the post-delete
-        version over the original, so nothing survives. A row that spills onto
-        **overflow pages** (roughly past ~4 KB) is different: those pages
-        return to the freelist *without* being rewritten, so their contents
-        stay in the file until something rebuilds it. Free-form auto-memory
-        notes routinely clear that bar, which is precisely the content purge
-        exists to take back.
+        DELETE can leave the row's text readable in the file (PMSERV-171), for
+        LARGE rows and on SOME builds — measured rather than assumed, because
+        both the general claim and its opposite are false. A row that fits in
+        one SQLite page is rewritten in place and the WAL checkpoint copies the
+        post-delete version over the original, so nothing survives anywhere. A
+        row that spills onto **overflow pages** (past ~4 KB) depends on the
+        compiled ``PRAGMA secure_delete``: at ``2`` (fast — Apple's system
+        SQLite) freed pages are NOT zeroed and keep their contents; at ``1``
+        (full — typical Linux builds) they are. Free-form auto-memory notes
+        routinely clear the size bar, which is precisely the content purge
+        exists to take back — so on macOS this matters and on Linux it usually
+        does not.
 
         ``vacuum=True`` follows the DELETE with ``VACUUM`` (rebuilds the file,
         so free pages are not carried over) and

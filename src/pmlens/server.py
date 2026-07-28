@@ -1700,11 +1700,14 @@ def pm_memory_ingest(
       undo the gate's remediation points at.
     vacuum (purge only, PMSERV-171): after deleting, rebuild the global index
       file and truncate the ``-wal`` sidecar, so the purged text is not left
-      behind. It can be: a small row is overwritten in place by the WAL
-      checkpoint and leaves nothing, but a row large enough for SQLite
-      overflow pages (past ~4 KB — ordinary for a free-form note) has those
-      pages freed WITHOUT being rewritten, so a grep of the file still finds
-      most of the note after a plain purge. Off by
+      behind. Whether anything WAS left behind depends on the build: a small
+      row is overwritten in place by the WAL checkpoint everywhere, but a row
+      large enough for SQLite overflow pages (past ~4 KB — ordinary for a
+      free-form note) keeps its contents in freed pages where the compiled
+      ``PRAGMA secure_delete`` is ``2`` (fast — Apple's system SQLite) and does
+      not where it is ``1`` (typical Linux builds). So on macOS a grep of the
+      file still finds most of a purged note; on Linux it usually does not.
+      Vacuum is correct on both, and reclaims the file size either way. Off by
       default because it takes an exclusive lock and rewrites the whole file.
       Reach for it when the purge was prompted by content — a note that turned
       out to contain a secret or PII — rather than by scope. Ignored on

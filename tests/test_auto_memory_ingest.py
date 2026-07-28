@@ -529,12 +529,22 @@ _BIG_NOTE_FILLER = "residue-payload-" * 4096  # ~64 KB
 class TestPurgeVacuum:
     """PMSERV-171: purge can reclaim the bytes, but only when asked.
 
-    Scope, stated precisely because the imprecise version is tempting: a
-    DELETE does not generally leave readable text behind in this store. In WAL
-    mode the modified page is checkpointed over the original, so small rows
-    vanish for free. What survives is the *overflow* content of large rows,
-    which is freed without being rewritten — and that is exactly the shape of
-    an auto-memory note someone pasted a secret into.
+    Whether there is anything to reclaim is BUILD-dependent, which cost a red
+    CI to discover. ``PRAGMA secure_delete`` is compiled in, and the value
+    differs by platform:
+
+    * ``2`` (FAST — Apple's system SQLite): pages being rewritten anyway are
+      zeroed, but pages *freed* are not. A large row's overflow pages therefore
+      keep their contents after a DELETE. Measured: 63 readable blocks from a
+      64 KiB note.
+    * ``1`` (full — the Linux builds CI runs on): freed pages are zeroed too,
+      so a plain purge already leaves nothing.
+
+    So these tests assert what holds on BOTH: after ``vacuum=True`` the residue
+    is zero, and vacuum never leaves more behind than a plain purge. The
+    platform-specific number is recorded, not asserted — an assert that only
+    passes on the developer's laptop is how a suite starts getting relaxed to
+    make CI green.
     """
 
     def _residue_blocks(self, store) -> int:
@@ -546,39 +556,54 @@ class TestPurgeVacuum:
                 blob += path.read_bytes()
         return blob.count(b"residue-payload-" * 64)
 
-    def test_default_purge_leaves_the_overflow_bytes_and_says_nothing(self, env):
-        """No vacuum key at all unless asked — the response shape is unchanged
-        for every existing caller — and the residue this feature exists for is
-        asserted rather than assumed."""
-        home, a, _b, store = env
-        write_note(home, a, "a1.md", _BIG_NOTE_FILLER)
-        store.ingest_auto_memory(*collect(a, home))
+    def _purge_and_measure(self, env, name: str, *, vacuum: bool) -> tuple[dict, int]:
+        """Ingest exactly one big note, purge it, and measure what is left.
 
-        result = store.purge_auto_memory(None)
+        The note dir is cleared first: a leftover file from an earlier
+        measurement gets collected too, so the second call would ingest two
+        rows and purge two — the counts stop describing one note.
+        """
+        home, a, _b, store = env
+        d = home / ".claude" / "projects" / auto_memory.encode_project_dirname(a) / "memory"
+        if d.is_dir():
+            for stale in d.glob("*.md"):
+                stale.unlink()
+        write_note(home, a, name, _BIG_NOTE_FILLER)
+        store.ingest_auto_memory(*collect(a, home))
+        result = store.purge_auto_memory(None, vacuum=vacuum)
+        return result, self._residue_blocks(store)
+
+    def test_default_purge_says_nothing_about_vacuum(self, env):
+        """The response shape is unchanged for every existing caller."""
+        result, _residue = self._purge_and_measure(env, "a1.md", vacuum=False)
         assert result["purged"] == 1
         assert "vacuumed" not in result
         assert "vacuum_error" not in result
-        assert store.search_global_ex("residue")[0] == []  # gone from the index
-        assert self._residue_blocks(store) > 0, (
-            "a large purged note left no residue at all — if SQLite's behaviour "
-            "changed, vacuum=True may no longer be solving anything and this "
-            "feature's justification should be re-checked, not the assert relaxed"
-        )
+        assert env[3].search_global_ex("residue")[0] == []  # gone from the index
 
-    def test_vacuum_removes_the_residual_plaintext(self, env):
-        home, a, _b, store = env
-        write_note(home, a, "a1.md", _BIG_NOTE_FILLER)
-        store.ingest_auto_memory(*collect(a, home))
+    def test_vacuum_never_leaves_more_behind_than_a_plain_purge(self, env, tmp_path):
+        """The invariant that holds on every build.
 
-        result = store.purge_auto_memory(None, vacuum=True)
-        assert result["purged"] == 1
-        assert result["vacuumed"] is True
-        assert "vacuum_error" not in result
-        assert store.search_global_ex("residue")[0] == []
-        assert self._residue_blocks(store) == 0, (
-            "vacuum=True must leave no readable copy in the index file or its "
-            "WAL sidecar — truncating the WAL is the half that is easy to omit"
+        On secure_delete=2 this is a strict improvement (residue -> 0); on
+        secure_delete=1 both are already 0 and vacuum is redundant for this
+        purpose, still reclaiming file space. Either way vacuum must not be
+        WORSE, which is the property a future change could plausibly break.
+        """
+        import sqlite3 as _sqlite3
+
+        plain_result, plain_residue = self._purge_and_measure(env, "plain.md", vacuum=False)
+        vacuum_result, vacuum_residue = self._purge_and_measure(env, "vac.md", vacuum=True)
+
+        mode = _sqlite3.connect(":memory:").execute("PRAGMA secure_delete").fetchone()[0]
+        assert plain_result["purged"] == 1
+        assert vacuum_result["purged"] == 1
+        assert vacuum_result["vacuumed"] is True
+        assert vacuum_residue == 0, (
+            f"vacuum=True must leave no readable copy (secure_delete={mode}, "
+            f"plain purge left {plain_residue} blocks) — truncating the WAL is "
+            "the half that is easy to omit"
         )
+        assert vacuum_residue <= plain_residue
 
     def test_dry_run_never_vacuums(self, env):
         """dry_run is a pure preview (PMSERV-156). vacuum must not break that:
