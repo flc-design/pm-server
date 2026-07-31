@@ -100,8 +100,17 @@ hooks/MCP need the reload).
 
 ## Release vs dev `.mcp.json`
 
-- **Committed (`.mcp.json`)** — release form: `uvx pm-server@0.14.0`. Pinned for
-  reproducibility; `uvx --from "pm-server>=0.14.0" pm-server` for a floor instead.
+- **Committed (`.mcp.json`)** — release form: `uvx pm-server@0.14.0 serve`.
+  The `serve` subcommand is **required**: `__main__.cli` is a plain
+  `@click.group()` with no `invoke_without_command`, so dropping it makes the
+  command print usage and exit 2 without ever reaching `mcp.run()`. The
+  committed pin shipped without it for several releases and no test noticed
+  (PMSERV-177); `tests/test_launch_surfaces.py` now guards every launch
+  surface. Note what the pin does and does not fix: it selects the *wrapper*
+  distribution, but that wrapper declares `pmlens` with a floor and no upper
+  bound, so a later pmlens release can change the implementation underneath
+  an unchanged command. Use `uvx --from "pm-server>=0.14.0" pm-server serve`
+  for an explicit floor instead.
 - **Dev** — local source via `uv run --project <repo> pmlens serve`, supplied
   through `--mcp-config` in the isolation harness above (not committed).
 
