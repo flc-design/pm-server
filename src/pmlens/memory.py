@@ -172,6 +172,39 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
 
 
+def _checkpoint_passive(conn: sqlite3.Connection) -> str | None:
+    """Fold committed WAL frames into the main DB file. Never raises.
+
+    Why the WRITE path checkpoints at all (PMSERV-176): a PM_LENS=1 reader
+    opens the DB with ``immutable=1``, which skips WAL processing entirely —
+    it sees only what has already reached the main file. Nothing on the read
+    path can close that gap: reading a WAL database read-only requires the
+    ``-shm`` sidecar, and creating one violates the ADR-028 invariant that a
+    Lens host never writes into another project's ``.pm/``. So visibility is
+    the writer's job. It owns the DB and may checkpoint; the reader may not.
+
+    Without this, the only checkpoints were SQLite's automatic ones at
+    ``wal_autocheckpoint`` (1000 pages ≈ 3.9 MiB by default) and purge's
+    explicit TRUNCATE (PMSERV-171). A project that writes steadily but stays
+    under the threshold and never purges therefore hid every record behind
+    the WAL — measured at three weeks / 16 summaries on this repo, which is
+    how PMSERV-176 was found.
+
+    PASSIVE is deliberate: it copies what it can without waiting on readers
+    and without blocking writers, so a concurrent session never stalls on our
+    convenience. A partial copy is fine — the next save finishes the job.
+
+    Returns an error string instead of raising, mirroring purge's
+    ``vacuum_error`` contract (PMSERV-171): failing to checkpoint must never
+    fail the save that triggered it.
+    """
+    try:
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+    except sqlite3.Error as e:
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     """Open a SQLite connection in read-only, side-effect-free mode.
 
@@ -411,6 +444,10 @@ class MemoryStore:
         # exists-but-uninitialized) so server.py read tools can add an
         # explanatory note distinguishing "no records" from "store unavailable".
         self.lens_fallback = lens_fallback
+        # PMSERV-176: last PASSIVE checkpoint outcome, for diagnostics only.
+        # None means "no checkpoint attempted yet, or it succeeded" — a
+        # checkpoint failure is never fatal to the write that triggered it.
+        self.last_checkpoint_error: str | None = None
         if readonly:
             self._conn = _connect_readonly(db_path)
         else:
@@ -854,6 +891,13 @@ class MemoryStore:
             ),
         )
         self._conn.commit()
+        # PMSERV-176: publish this row to immutable=1 Lens readers. The
+        # session summary is THE continuity datum pm_recall returns at session
+        # start, so a summary stranded in the WAL is precisely the failure
+        # being guarded against — a new session silently restoring weeks-old
+        # context. Checkpointing here (rather than on every save) keeps the
+        # cost on the one write that matters for continuity.
+        self.last_checkpoint_error = _checkpoint_passive(self._conn)
         row = self._conn.execute(
             "SELECT id FROM session_summaries WHERE session_id = ?",
             (summary.session_id,),

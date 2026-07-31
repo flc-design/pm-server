@@ -297,6 +297,75 @@ def _resolve_track(
 
 _memory_stores: dict[str, MemoryStore] = {}
 
+# PMSERV-176: the DB-file identity each cached Lens store was opened against.
+# The Lens connection uses mode=ro&immutable=1, which tells SQLite the file
+# will not change — so SQLite skips change detection entirely and the
+# connection keeps serving whatever it first read, for the whole life of the
+# server process. Combined with this never-evicted cache that meant a Lens
+# host could not observe ANY later write, not even after the owner
+# checkpointed. Stamping the file lets the cache notice and reopen.
+_memory_store_stamps: dict[str, tuple[bool, int, int, int]] = {}
+
+# PMSERV-176: appended when the owning session has committed rows that have
+# not reached the main DB file yet. An immutable=1 reader cannot see them, so
+# saying nothing would let a caller read "no recent records" as fact — which
+# is exactly the misreading that made this bug expensive to find.
+_STALE_WAL_NOTE: str = (
+    "the owning session has committed records that have not been checkpointed "
+    "into the main database file yet; this read-only view cannot see them "
+    "until the writer checkpoints. Records older than that are complete."
+)
+
+
+def _db_stamp(db_path: Path) -> tuple[bool, int, int, int]:
+    """Identity of a DB file right now: ``(exists, size, mtime_ns, counter)``.
+
+    A ``stat()`` plus a 28-byte header read. Both are pure reads — nothing is
+    created, no SQLite connection is opened and no lock is taken — so this
+    stays inside the ADR-028 no-sidecar invariant and does not perturb the
+    ``(path, size, mtime_ns)`` snapshot the Lens T6 sweep compares
+    (tests/test_lens_invariant.py).
+
+    Three signals rather than one because each has a blind spot and any one
+    of them changing is enough to trigger a reopen (over-triggering costs a
+    reconnect; under-triggering costs correctness):
+
+    * ``size`` misses a same-size rewrite.
+    * ``mtime_ns`` misses writes that land inside one filesystem timestamp
+      tick — real on filesystems with coarse timestamp granularity.
+    * ``counter`` is bytes 24..27 of the SQLite header, the big-endian file
+      change counter, bumped when the MAIN database file is modified. In WAL
+      mode a commit lands in the ``-wal`` and does not move it; a checkpoint
+      does. That is exactly the granularity an ``immutable=1`` reader cares
+      about, since the main file is all it can see.
+
+    Absence is a stamp too — ``(False, 0, 0, 0)``. That is what lets a store
+    which fell back to an empty in-memory DB (because the file did not exist
+    yet) pick up the real database once it appears, instead of insisting the
+    project has no memory until the server restarts.
+    """
+    try:
+        st = db_path.stat()
+        with db_path.open("rb") as fh:
+            header = fh.read(28)
+    except OSError:
+        return (False, 0, 0, 0)
+    counter = int.from_bytes(header[24:28], "big") if len(header) >= 28 else 0
+    return (True, st.st_size, st.st_mtime_ns, counter)
+
+
+def _wal_bytes(db_path: Path) -> int:
+    """Size of the DB's ``-wal`` sidecar, or 0 if there is none.
+
+    Another pure ``stat()`` — deliberately not an open. Nonzero means the
+    writer has frames the immutable reader cannot see yet.
+    """
+    try:
+        return db_path.with_name(db_path.name + "-wal").stat().st_size
+    except OSError:
+        return 0
+
+
 # PMSERV-091/093: explanatory note appended to read-tool responses when the
 # Lens MemoryStore fell back to an empty in-memory store (DB absent OR
 # exists-but-uninitialized). Lets users distinguish "no records yet" from
@@ -333,14 +402,28 @@ def _search_diag_keys(diag: SearchDiagnostics) -> dict:
 
 
 def _maybe_add_lens_note(result: dict, store: MemoryStore) -> dict:
-    """Append the Lens-fallback note to a tool result when applicable.
+    """Annotate a Lens read result with what the caller cannot otherwise know.
 
-    No-op when the store was opened against an initialized DB. Only intended
-    for local-DB result dicts; cross-project paths should not call this since
-    they read the global index regardless of local state (PMSERV-093).
+    Two additive keys, both self-limiting — they appear only when they carry
+    information, following the ``_search_diag_keys`` precedent:
+
+    * ``note`` — the store fell back to an empty in-memory DB (PMSERV-091/093).
+      No-op when the store was opened against an initialized DB.
+    * ``stale_wal_bytes`` / ``stale_note`` — the DB has un-checkpointed WAL
+      frames this read-only view cannot see (PMSERV-176). Emitted only on the
+      readonly (Lens) path, since a read-write owner sees its own WAL.
+
+    Only intended for local-DB result dicts; cross-project paths should not
+    call this since they read the global index regardless of local state
+    (PMSERV-093).
     """
     if getattr(store, "lens_fallback", False):
         result["note"] = _LENS_FALLBACK_NOTE
+    if getattr(store, "readonly", False):
+        pending = _wal_bytes(store.db_path)
+        if pending:
+            result["stale_wal_bytes"] = pending
+            result["stale_note"] = _STALE_WAL_NOTE
     return result
 
 
@@ -355,11 +438,40 @@ def _get_memory_store(project_path: str | None) -> MemoryStore:
     without raising ``sqlite3.OperationalError``. The fallback flag flows
     through ``MemoryStore.lens_fallback`` so tools can attach an explanatory
     note via ``_maybe_add_lens_note`` (PMSERV-091).
+
+    Cache lifetime (PMSERV-176): stores are cached per ``.pm`` path and were
+    previously never evicted. That is fine for a read-write owner, which sees
+    its own writes through its own connection — but an ``immutable=1`` Lens
+    connection does no change detection at all, so the cached store was frozen
+    at whatever the file held when the process first read it. Every Lens read
+    therefore re-stamps the DB file (``stat()`` only) and reopens on change.
+    Note this fixes staleness *after* a checkpoint; frames still sitting in
+    the WAL remain invisible by construction, which is why the write path
+    checkpoints on summary save and why ``_maybe_add_lens_note`` reports
+    ``stale_wal_bytes``.
     """
     pm_path = _get_pm_path(project_path)
     key = str(pm_path)
+    db_path = pm_path / "memory.db"
+    if PM_LENS_ENABLED:
+        # PMSERV-176: an immutable=1 connection performs no change detection,
+        # so a cached Lens store is pinned to whatever the file contained when
+        # it was opened. Compare the file's identity instead and reopen when it
+        # moved. This also un-sticks the in-memory fallback: a project that had
+        # no memory.db at first touch stops being reported as empty forever
+        # once the DB is created.
+        stamp = _db_stamp(db_path)
+        if key in _memory_stores and _memory_store_stamps.get(key) != stamp:
+            stale_store = _memory_stores.pop(key)
+            _memory_store_stamps.pop(key, None)
+            try:
+                stale_store.close()
+            except Exception:  # noqa: BLE001 - a store we are discarding
+                # anyway; failing to close it must not fail the read that
+                # noticed the file had changed.
+                pass
+        _memory_store_stamps[key] = stamp
     if key not in _memory_stores:
-        db_path = pm_path / "memory.db"
         if PM_LENS_ENABLED:
             # The global index path IS passed under Lens (PMSERV-156): the
             # store reads it with mode=ro&immutable=1 (no sidecars in ~/.pm)
