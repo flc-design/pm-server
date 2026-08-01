@@ -198,7 +198,7 @@ jobs:
       # Step order is the whole enforcement mechanism here: keep these two
       # steps adjacent and in this order.
       - name: Publish pmlens to PyPI via Trusted Publisher
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # v1.14.1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           # Idempotent republish: a re-fired tag run must not fail on files
           # already uploaded (e.g. re-tagging to republish the pm-server
@@ -206,7 +206,7 @@ jobs:
           skip-existing: true
 
       - name: Publish pm-server wrapper to PyPI via Trusted Publisher
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # v1.14.1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           packages-dir: wrapper-dist/
           skip-existing: true
