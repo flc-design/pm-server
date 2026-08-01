@@ -363,9 +363,14 @@ def test_wrapper_dependency_floor_matches_pyproject():
 def test_uv_lock_root_version_matches_pyproject():
     """``uv.lock``'s own entry for this project must track pyproject.
 
-    Nothing in CI runs ``uv sync --locked`` today (ci.yml uses ``pip install
-    -e``), so a stale lock does not fail anything — it just self-heals into an
-    unrelated commit's diff, or breaks a contributor who does use ``--locked``.
+    Since PMSERV-178 this is no longer the only thing standing between a stale
+    uv.lock and a green build: ci.yml's ``lockfile-freshness`` job runs
+    ``uv lock --check``, which fails when the lock no longer matches
+    pyproject.toml. That check subsumes this one on paper — a changed project
+    version is drift like any other. It is kept anyway for two reasons: it
+    names the actual mismatch instead of reporting generic lock staleness, and
+    it belongs to the release-surface pin sweep below, which must be readable
+    as one set rather than one-test-here-one-job-there.
 
     Located by ``source.editable == "."`` rather than by name so that adding a
     second local editable member — the situation in which a second version pin

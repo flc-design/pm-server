@@ -1,5 +1,81 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **The hash-verified install is now actually executed (PMSERV-178)**: v0.6.1
+  added `requirements.lock` with SHA-256 hashes and described
+  `pip install --require-hashes -r requirements.lock` as the structural defense
+  against mid-flight package replacement. Nothing ever ran it. CI, release, and
+  the Makefile all installed with `pip install -e ".[dev]"`; no Dependabot
+  ecosystem covered Python; and the file drifted two minor versions behind the
+  environment anyone actually used, pinning `fastmcp 3.2.4` while both the
+  installed toolchain and `uv.lock` had moved on. A documented-but-unexecuted
+  security control is worse than an absent one — it reads as a guarantee to
+  anyone auditing the repository, and takes about thirty seconds to disprove.
+
+  `ci.yml` gains a `test-locked` job that installs the tree with
+  `--require-hashes` and runs the suite against it, and a `lockfile-freshness`
+  job that runs `uv lock --check`. The existing matrix job keeps resolving
+  dependencies fresh, which is not redundancy: this project ships a floating
+  range (`fastmcp>=3.2.0,<4.0`), so users get whatever resolves at install time,
+  and the floating job is the early warning for upstream breakage. Dependabot
+  now covers `pip` (requirements.lock) and `uv` (uv.lock) alongside
+  `github-actions`.
+
+  Scope stated precisely, so this entry does not repeat the mistake it fixes:
+  every runtime and dev dependency installed by `test-locked` is hash-verified.
+  The build backend for the editable install (hatchling) is fetched by pip's
+  build isolation and is **not** hash-pinned — it is a build-time input, not a
+  shipped dependency.
+
+  The two lockfiles now have distinct, documented roles instead of silently
+  disagreeing: `requirements.lock` is the hash-verified install,
+  `uv.lock` is the development environment (`.devcontainer`,
+  `uv run --project`). The guards do not depend on Dependabot working —
+  `uv lock --check` fails on drift, and a requirements.lock missing a
+  dependency fails `test-locked` on import.
+
+### Fixed
+
+- **A Lens viewer could not see its own project (PMSERV-176, ADR-051)**: a new
+  session's `pm_recall` returned a three-week-old summary while the newest one
+  sat committed and durable on disk — 16 summaries and 29 memories invisible.
+  Two mechanisms stacked. The read path opens the database
+  `mode=ro&immutable=1`, which makes SQLite skip WAL processing entirely, so the
+  reader saw only what had reached the main file; the default
+  `wal_autocheckpoint` is 1000 pages (~3.9 MiB) and this repository's database
+  stayed under it. And `server._memory_stores` cached stores for the process
+  lifetime while `immutable=1` disables change detection, so the view was pinned
+  to whatever was first read — an explicit checkpoint changed nothing.
+
+  Neither is fixable on the read path: reading a WAL database read-only needs
+  the `-shm` sidecar, and creating one breaks the ADR-028 invariant that a Lens
+  host never writes into another project's `.pm/`. So the fix splits by
+  ownership. The writer checkpoints (`PASSIVE`, after `save_session_summary` —
+  the datum `pm_recall` returns at session start), failure recorded and never
+  raised. The reader re-stamps the database file each read and reopens on
+  change, using `(exists, size, mtime_ns, header change counter)` — `stat()`
+  plus a 28-byte header read, so no connection, no lock, no sidecar. What stays
+  invisible is disclosed as `stale_wal_bytes` / `stale_note`, because the
+  expensive part of this bug was a caller reading "no recent records" as fact.
+
+  Absence is a stamp too, which also un-sticks the cached in-memory fallback: a
+  project whose database did not exist at first touch was reported as having no
+  memory at all, permanently, even after `pm_init`.
+
+- **The Claude Code plugin never started the MCP server (PMSERV-177)**:
+  `plugin/.mcp.json` launched `uvx pm-server@<version>` with no subcommand.
+  `__main__.cli` is a plain `@click.group()` with no `invoke_without_command`,
+  so that argv printed usage and exited 2 without reaching `mcp.run()`. It
+  shipped that way from the plugin's first commit; only the version string was
+  ever bumped. The other three registration surfaces all passed `serve` — the
+  gap was that no test read the two static config files for launch shape.
+  `tests/test_launch_surfaces.py` now asserts every shipped launch config ends
+  in `serve`, fails when an unregistered `.mcp.json` appears, and completes a
+  real stdio MCP handshake against a spawned server.
+
 ## [0.14.0] - 2026-07-27
 
 Cursor and Grok Build join Claude Code and Codex as supported hosts, and memory

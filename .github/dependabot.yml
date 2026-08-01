@@ -28,3 +28,55 @@ updates:
           - "*"
     commit-message:
       prefix: "chore(deps)"
+
+  # PMSERV-178: keep requirements.lock fresh.
+  #
+  # This is the load-bearing one. requirements.lock is the hash-verified tree
+  # that ci.yml's `test-locked` job installs with `--require-hashes`, and a
+  # lock nobody updates is how it ended up two minor versions behind reality
+  # (pinned fastmcp 3.2.4 while everyone ran 3.4.5). It is pip-compile output,
+  # which GitHub supports natively under the `pip` ecosystem — a mature path,
+  # deliberately chosen over relying on uv for the file that carries the
+  # security claim.
+  #
+  # Grouped like github-actions above, and with the same trade-off (ADR-013):
+  # one PR may mix a safe patch with a breaking major. Review accordingly.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # PMSERV-178: keep uv.lock fresh — best effort, by design.
+  #
+  # uv.lock is the DEVELOPMENT environment (.devcontainer, and the
+  # `uv run --project` flow in plugin/README.md). Astral documents this
+  # ecosystem, but calls the support incomplete and tracks unsupported cases
+  # upstream; there are open reports of uv.lock simply not being updated.
+  #
+  # That is acceptable ONLY because nothing depends on it working: ci.yml's
+  # `lockfile-freshness` job runs `uv lock --check` and fails if uv.lock drifts
+  # from pyproject.toml. If this entry silently does nothing, CI still tells
+  # us. Never move the hash-verified file onto this ecosystem without
+  # revisiting that reasoning.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    groups:
+      uv-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"
