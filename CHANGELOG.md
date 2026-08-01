@@ -1,6 +1,26 @@
 # Changelog
 
-## [Unreleased]
+## [0.15.0] - 2026-08-01
+
+Three things had been broken for months, and all three were invisible because
+each failed without producing an error. A read-only Lens could not see its own
+project — `pm_recall` returned three-week-old context while the newest summaries
+sat committed and durable on disk. The Claude Code plugin had never once started
+the MCP server, from its first commit. And the hash-verified install the
+changelog has advertised since v0.6.1 was never executed by anything.
+
+Each is fixed here alongside the guard that would have caught it: a wire-level
+test that spawns the server and completes a real MCP handshake, a freshness
+check on the cached read path, and a CI job that performs the `--require-hashes`
+install for real. That last guard earned its keep immediately — it went red on
+its first run, over a platform-conditional dependency a macOS-generated lockfile
+could not have contained.
+
+The content pipeline also loses its "X / build-in-public" naming, which described
+one destination rather than the capability and implied a risk the implementation
+does not carry.
+
+MCP tool count: 44 (unchanged). Test suite: 1,528 passing. ADR-051, ADR-052.
 
 ### Changed
 
