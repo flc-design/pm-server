@@ -53,6 +53,18 @@
   now covers `pip` (requirements.lock) and `uv` (uv.lock) alongside
   `github-actions`.
 
+  `requirements.lock` is now generated with
+  `uv pip compile --universal --generate-hashes --all-extras`, replacing
+  `pip-compile`. This is a correctness fix, not a preference: `pip-compile`
+  resolves for the environment it runs in, and `keyring` pulls `SecretStorage`
+  and `jeepney` only under `sys_platform == "linux"`. A lock generated on macOS
+  therefore omitted them, and `test-locked` failed on its first run against the
+  Linux runner — pip refuses an unpinned transitive requirement under
+  `--require-hashes`. A universal resolution emits every platform's
+  dependencies behind environment markers, so one file installs correctly on
+  both; regenerating on Linux instead would only have moved the hole. Verified
+  on `linux/amd64` and macOS.
+
   Scope stated precisely, so this entry does not repeat the mistake it fixes:
   every runtime and dev dependency installed by `test-locked` is hash-verified.
   The build backend for the editable install (hatchling) is fetched by pip's
