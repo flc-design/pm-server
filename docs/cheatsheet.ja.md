@@ -72,12 +72,12 @@ Claude Code セッション:
 | `pm_outbox_merge` | outbox エントリをプロジェクトストアへ昇格 | `ids?`, `target_project?` |
 | `pm_outbox_reject` | outbox エントリを却下 | `ids` |
 
-### X コンテンツパイプライン (ADR-024)
+### コンテンツパイプライン (ADR-024)
 
 | ツール | 説明 | 主要パラメータ |
 |------|-------------|------------|
-| `pm_draft_x` | 記録済み知見から build-in-public X スレッドを下書き | `source?`, `angle?` |
-| `pm_redact_draft` | 下書きを redact（手動投稿前の唯一の安全層） | `draft_id` |
+| `pm_draft_x` | 記録済み知見から公開用の下書きを生成 | `source?`, `angle?` |
+| `pm_redact_draft` | 下書きを redact（手動公開前の唯一の安全層） | `draft_id` |
 | `pm_reject_draft` | 下書きを却下 | `draft_id` |
 | `pm_x_drafts_pending` | redact 済みで人手レビュー待ちの下書き一覧 | _(なし)_ |
 

@@ -428,18 +428,19 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
     <li><strong>brainstorming</strong>: アイデアの<em>創発</em>と要件・仕様への結晶化 (KR + ADR を生成)。</li>
   </ul>
 
-  <h3>5.5 <code>content-pipeline</code> (4 steps) — .pm 由来の知見を build-in-public 投稿へ</h3>
+  <h3>5.5 <code>content-pipeline</code> (4 steps) — .pm 由来の知見を公開用下書きへ</h3>
   <p><code>.pm</code> の副産物 (lesson / insight / 採択 ADR / defect) を、redact 済みで人間レビューを経た
-     build-in-public の X 下書きに変換する workflow (PMSERV-113, ADR-024)。
-     <code>extract</code> (<code>pm_recall</code> で出典を特定し post 価値・自己完結性を確認) →
+     公開用の下書きに変換する workflow (PMSERV-113, ADR-024)。出力先は問わない — ブログ記事、社内共有、
+     SNS など、下書きを受け取った人間が決める。
+     <code>extract</code> (<code>pm_recall</code> で出典を特定し公開価値・自己完結性を確認) →
      <code>draft</code> (<code>pm_draft_x</code> を<strong>先に</strong>呼んで下書き行を即永続化＝compaction 耐性。
      <code>raw_content</code> は provenance 用に保持するがレビュー queue には出さない) →
      <code>redact</code> (<code>pm_redact_draft</code> による Layer-1 決定論スクラブ → redact 済みフィールドに
      <code>/secret-scan</code> と <code>/privacy-check</code> の Layer-2) →
      <code>review</code> (<code>pm_x_drafts_pending</code> で redact 済み下書きを人間に提示)。</p>
-  <p><strong>安全モデル:</strong> PM Lens は X 認証情報を持たず、ネットワーク送信・投稿を一切行わない
-     — 「自動投稿しない」は gate ではなく<em>構造的保証</em>。redaction が唯一の安全層で、人間が redact 済み
-     下書きをレビューしてシステムの外で<strong>手動投稿</strong>する。workflow engine は gate を強制しないため、
+  <p><strong>安全モデル:</strong> PM Lens はいかなる公開先の認証情報も持たず、ネットワーク送信を一切行わない
+     — 「自動公開しない」は gate ではなく<em>構造的保証</em>。redaction が唯一の安全層で、人間が redact 済み
+     下書きをレビューしてシステムの外で<strong>手動公開</strong>する。workflow engine は gate を強制しないため、
      どの step も「enforced approval gate」を主張しない (ADR-024)。</p>
 
   <div class="tip">

@@ -36,7 +36,7 @@
 ## 特徴
 
 - **🔌 マルチホストファースト** — `pmlens install --target=auto` 一発で **Claude Code / Codex CLI / Cursor / Grok Build に登録**。プロジェクトのルールも `CLAUDE.md` と `AGENTS.md` の両方に自動同期 (ADR-008)。プロジェクト途中でホストを切り替えてもコンテキストを失わない — 同じ `.pm/` データ、同じワークフロー
-- **44 の MCP ツール** — タスク CRUD、子イシュー、ステータス、ブロッカー、ベロシティ、ダッシュボード、プロンプトパック、ADR、セッションメモリ、ワークフロー、ナレッジレコード、マルチホストルール注入、クロスホスト Outbox ブリッジ、build-in-public X 下書き 等
+- **44 の MCP ツール** — タスク CRUD、子イシュー、ステータス、ブロッカー、ベロシティ、ダッシュボード、プロンプトパック、ADR、セッションメモリ、ワークフロー、ナレッジレコード、マルチホストルール注入、クロスホスト Outbox ブリッジ、コンテンツパイプライン（記録済み知見 → redact 済み下書き） 等
 - **ワークフローエンジン** — テンプレートベースの開発ワークフロー（ループ、ユーザーゲート、チェイン対応：Discovery → Development）
 - **ナレッジレコード** — カジュアルなメモリとフォーマルな ADR の中間に位置する構造化された知見記録（research、tradeoff、spec 等）
 - **Super Research スキル** — 3 並列エージェント（Domain Expert、Critical Analyst、Lateral Thinker）+ Depth Check（6 次元）+ Fact Check + Cross-Check
@@ -368,11 +368,17 @@ auto-memory ノートは自由記述なので、この閾値を日常的に超�
 | `pm_workflow_list` | ステータスフィルタ付きで全ワークフローインスタンスを一覧 |
 | `pm_workflow_templates` | 利用可能なテンプレート一覧（組み込み + カスタム） |
 
-### X コンテンツパイプライン（build-in-public, ADR-024）
+### コンテンツパイプライン（ADR-024）
+
+`.pm` に記録済みの知見（lesson / insight / 採択された ADR など）を公開用の下書きへ変換する。
+出力先は問わない — ブログ記事、社内共有、SNS など。サーバーはいずれの公開先の認証情報も持たず、
+ネットワーク送信もスコープ外なので、**ここから公開することは構造的に不可能**。redact 済みの下書きを
+人間が系外へ取り出し、任意の場所へ公開する。決定論的な redact が唯一の安全層で、原文（原液）は
+ストアの外に出ない。
 
 | ツール | 説明 |
 |---|---|
-| `pm_draft_x` | `.pm` シグナルから build-in-public の X 下書きをステージング — 原文（原液）は内部保持（PMSERV-113） |
+| `pm_draft_x` | `.pm` シグナルから下書きをステージング — 原文（原液）は内部保持（PMSERV-113） |
 | `pm_redact_draft` | Layer-1 決定論的 redaction 前処理 — hook と各 body セグメントを除去し件数のみレポート |
 | `pm_x_drafts_pending` | ステージング済み下書きのレビューキュー — redact 済み / 安全フィールドのみ公開 |
 | `pm_reject_draft` | ステージング済み下書きを必須・監査可能な理由付きで破棄 |

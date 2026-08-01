@@ -43,7 +43,7 @@ class TestRulesModule:
         assert isinstance(TEMPLATE_VERSION, int)
         assert TEMPLATE_VERSION >= 1
 
-    def test_template_version_pinned_at_v12(self):
+    def test_template_version_pinned_at_v13(self):
         # ADR-008 4th-tier guard: a bump must be intentional. v11 is the PM Lens
         # rebrand — the rule-section heading "PM Server 自動行動ルール" becomes
         # "PM Lens 自動行動ルール", so the bump re-injects the new heading into
@@ -55,15 +55,26 @@ class TestRulesModule:
         # that read AGENTS.md and corrected the ADR-028 branch clause, which
         # said "hosts without hooks" when Cursor and Grok Build both HAVE
         # hooks — what they lack is a pmlens-installed one (PMSERV-165).
-        assert TEMPLATE_VERSION == 12
+        # v13 dropped the "X / build-in-public" framing from the content
+        # pipeline section (PMSERV-181). The behaviour is unchanged; the name
+        # was implying a risk the implementation does not carry — this section
+        # is injected into every managed CLAUDE.md/AGENTS.md, so it is the
+        # widest-reaching place that framing appeared.
+        assert TEMPLATE_VERSION == 13
 
-    def test_template_contains_x_content_pipeline_section(self):
+    def test_template_contains_content_pipeline_section(self):
         # PMSERV-119: the on-signal trigger rule must be present in the
-        # template, including the load-bearing "never auto-post" invariant.
-        assert "X コンテンツパイプライン" in CLAUDEMD_TEMPLATE
+        # template, including the load-bearing "never auto-publish" invariant.
+        #
+        # PMSERV-181 renamed the heading and made the destination generic. The
+        # assertions below deliberately pin the NEUTRAL wording: re-introducing
+        # a channel name here would put it back into every managed CLAUDE.md.
+        assert "コンテンツパイプライン" in CLAUDEMD_TEMPLATE
         assert "content-pipeline" in CLAUDEMD_TEMPLATE
         assert "pm_redact_draft" in CLAUDEMD_TEMPLATE
         assert "propose-don't-force" in CLAUDEMD_TEMPLATE
+        # The safety claim is the load-bearing part and must survive rewording.
+        assert "構造的に不可能" in CLAUDEMD_TEMPLATE
 
     def test_template_contains_branch_aware_recall_section(self):
         # PMSERV-125 / ADR-028: the rule that teaches hook-less hosts (manual

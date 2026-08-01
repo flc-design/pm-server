@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The content pipeline is no longer named after one destination (PMSERV-181)**:
+  it shipped as "X Content Pipeline (Build-in-Public)", which described the
+  author's channel rather than the capability. The capability is turning
+  knowledge already recorded in `.pm` into a redacted, publishable draft — a
+  blog post, an internal write-up, a social thread; the pipeline does not care
+  and never did.
+
+  The old name was actively working against the implementation. The design's
+  strongest property is that the server holds credentials for no destination
+  and has no network egress in scope, so publishing from it is *structurally*
+  impossible rather than merely disallowed — the kind of property a security
+  reviewer wants to find. Labelled "build-in-public X drafts" in the feature
+  list, that reviewer instead reads "posts our internal project context to
+  social media" and stops. Same class of defect as the lockfile entry above,
+  pointing the other way: there the docs claimed a protection that did not run,
+  here they implied a risk that does not exist.
+
+  Renamed across README (EN/JA), both cheatsheets, `architecture.html`,
+  `workflow-guide.html`, and the `content-pipeline` workflow template — which
+  already carried the neutral name, so this mostly aligns everything else to it.
+  `TEMPLATE_VERSION` 12 → 13 because the rule section injected into every
+  managed `CLAUDE.md` / `AGENTS.md` carried the old heading; that is the
+  widest-reaching surface the framing appeared on. Behaviour, tools, schema and
+  the redaction guarantee are all unchanged. Tool identifiers still contain
+  `x` (`pm_draft_x`, `pm_x_drafts_pending`) — renaming those is a breaking MCP
+  API change, tracked separately.
+
 ### Security
 
 - **The hash-verified install is now actually executed (PMSERV-178)**: v0.6.1

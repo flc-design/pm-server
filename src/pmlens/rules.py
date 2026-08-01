@@ -44,7 +44,7 @@ assert set(TARGET_FILES) == set(HOSTS), "TARGET_FILES drifted from the host regi
 # naming CLAUDE.md; and the ADR-028 branch clause was factually wrong — it keyed
 # on "hosts without hooks", but Cursor and Grok Build both HAVE session hooks;
 # what they lack is a pmlens-installed one.
-TEMPLATE_VERSION = 12
+TEMPLATE_VERSION = 13
 BEGIN_MARKER = "<!-- pm-server:begin v={version} -->"
 END_MARKER = "<!-- pm-server:end -->"
 BEGIN_PATTERN = re.compile(r"<!-- pm-server:begin v=(\d+) -->")
@@ -158,9 +158,10 @@ pm-server のツールは副作用（例: 親タスクの自動 revert）を war
 1. chain_to がある場合（例: discovery → development）、次のワークフロー開始を提案する
 2. ワークフロー完了を pm_log に記録する
 
-### X コンテンツパイプライン（.pm → build-in-public 投稿、ADR-024）
-post 価値のある知見を記録した時、X 投稿の下書き作成をユーザーに提案できる（強制しない）。
-pm-server は X 認証情報も投稿機能も持たず、自動投稿は構造的に不可能。redact が唯一の安全層。
+### コンテンツパイプライン（.pm の知見 → 公開用下書き、ADR-024）
+公開価値のある知見を記録した時、下書きの作成をユーザーに提案できる（強制しない）。
+pm-server は公開先の認証情報も送信機能も持たず、自動公開は構造的に不可能。redact が唯一の安全層。
+出力先（ブログ・社内共有・SNS 等）は問わず、下書きを作るところまでが本パイプラインの責務。
 1. トリガ（質>頻度）: 次を記録した時のみ提案を検討する — pm_remember の type が lesson か insight、
    採択された pm_add_decision（ADR）、severity=defect の pm_add_issue。observation・enhancement・
    ルーチンな進捗は対象外。かつ内部文脈なしで読者に伝わる自己完結した知見に限る（未公開計画に結合した
@@ -169,7 +170,7 @@ pm-server は X 認証情報も投稿機能も持たず、自動投稿は構造�
    ワークフローを開始する。
 3. 必ず pm_redact_draft で redact してから（hook + 各 body セグメントを個別に）、/secret-scan と
    /privacy-check で Layer-2 確認。redact 済み下書きは pm_x_drafts_pending で確認する。
-4. 投稿はユーザーがシステム外で手動で行う。pm-server から投稿してはならない。
+4. 公開はユーザーがシステム外で手動で行う。pm-server から公開・送信してはならない。
 5. トリガもレビューも規約であり強制ではない（workflow gate は助言）。唯一の構造的保証は
    「ネットワーク/認証情報がスコープ外」であること。raw_content（原液）は決して表に出さない。
 

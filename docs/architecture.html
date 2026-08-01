@@ -519,8 +519,9 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
      ADR 起票して <code>chain_to: development</code>。詳細は workflow-guide.html §5.4。</p>
 
   <h3>5.5 <code>content-pipeline</code> (4 steps, ADR-024)</h3>
-  <p class="muted">.pm の知見 (lesson/insight/ADR/defect) を redact 済みの build-in-public X 下書きへ変換
-     (extract → draft → redact → review)。PM Lens は X 認証情報を持たず投稿しない — redaction が唯一の安全層。
+  <p class="muted">.pm の知見 (lesson/insight/ADR/defect) を redact 済みの公開用下書きへ変換
+     (extract → draft → redact → review)。出力先は問わない。PM Lens はいかなる公開先の認証情報も持たず
+     送信しない — redaction が唯一の安全層。
      詳細は workflow-guide.html §5.5。</p>
 </section>
 

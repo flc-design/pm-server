@@ -72,12 +72,12 @@ Claude Code session:
 | `pm_outbox_merge` | Promote outbox entries into the project store | `ids?`, `target_project?` |
 | `pm_outbox_reject` | Reject outbox entries without merging | `ids` |
 
-### X Content Pipeline (ADR-024)
+### Content Pipeline (ADR-024)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
-| `pm_draft_x` | Draft a build-in-public X thread from recorded knowledge | `source?`, `angle?` |
-| `pm_redact_draft` | Redact a draft (the only safety layer before manual posting) | `draft_id` |
+| `pm_draft_x` | Draft publishable content from recorded knowledge | `source?`, `angle?` |
+| `pm_redact_draft` | Redact a draft (the only safety layer before manual publishing) | `draft_id` |
 | `pm_reject_draft` | Reject a draft | `draft_id` |
 | `pm_x_drafts_pending` | List redacted drafts awaiting human review | _(none)_ |
 

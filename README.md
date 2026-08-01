@@ -36,7 +36,7 @@ Track tasks, visualize progress, record decisions — through natural language i
 ## Features
 
 - **🔌 Multi-host first** — registers in **Claude Code, Codex CLI, Cursor and Grok Build** with one command (`pmlens install --target=auto`). Project rules sync to `CLAUDE.md` and `AGENTS.md` automatically (ADR-008). Switch hosts mid-project without losing context — same `.pm/` data, same workflows
-- **44 MCP tools** — task CRUD, child issues, status, blockers, velocity, dashboard, prompt packs, ADR, session memory, workflows, knowledge records, multi-host rules injection, cross-host outbox bridge, build-in-public X drafts, and more
+- **44 MCP tools** — task CRUD, child issues, status, blockers, velocity, dashboard, prompt packs, ADR, session memory, workflows, knowledge records, multi-host rules injection, cross-host outbox bridge, content pipeline (recorded knowledge → redacted drafts), and more
 - **Workflow engine** — template-based development workflows with loops, user gates, and chaining (Discovery → Development)
 - **Knowledge records** — structured findings between casual memory and formal ADR (research, tradeoff, spec, etc.)
 - **Super Research skill** — 3 parallel agents (Domain Expert, Critical Analyst, Lateral Thinker) + Depth Check (6 dimensions) + Fact Check + Cross-Check
@@ -406,11 +406,18 @@ DB file.
 | `pm_workflow_list` | List all workflow instances with status filter |
 | `pm_workflow_templates` | List available workflow templates (built-in + custom) |
 
-### X Content Pipeline (Build-in-Public, ADR-024)
+### Content Pipeline (ADR-024)
+
+Turns knowledge already recorded in `.pm` — a lesson, an insight, an adopted ADR —
+into a publishable draft. Destination-agnostic: a blog post, an internal write-up,
+a social thread. The server holds credentials for none of them and has no network
+egress in scope, so publishing from here is structurally impossible; a human takes
+the redacted draft out of the system and publishes it wherever they choose.
+Deterministic redaction is the one safety layer, and raw content never leaves the store.
 
 | Tool | Description |
 |---|---|
-| `pm_draft_x` | Stage a build-in-public X draft from a `.pm` signal — raw content stays internal (PMSERV-113) |
+| `pm_draft_x` | Stage a draft from a `.pm` signal — raw content stays internal (PMSERV-113) |
 | `pm_redact_draft` | Layer-1 deterministic redaction prefilter — scrubs hook + each body segment, count-only report |
 | `pm_x_drafts_pending` | Review queue for staged drafts — exposes ONLY redacted / safe fields |
 | `pm_reject_draft` | Discard a staged draft with a mandatory, auditable reason |
