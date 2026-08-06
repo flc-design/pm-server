@@ -389,7 +389,7 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
 
     <!-- Outcomes: RO registered + RW excluded -->
     <rect x="100" y="210" width="320" height="60" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
-    <text x="260" y="232" text-anchor="middle" font-weight="700">FastMCP に登録 (15 tools)</text>
+    <text x="260" y="232" text-anchor="middle" font-weight="700">FastMCP に登録 (16 tools)</text>
     <text x="260" y="250" text-anchor="middle" fill="#666" font-size="10">pm_status, pm_next, pm_tasks, pm_blockers, pm_recall,</text>
     <text x="260" y="264" text-anchor="middle" fill="#666" font-size="10">pm_memory_search, pm_dashboard, pm_workflow_status …</text>
 
@@ -400,7 +400,7 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
 
     <!-- Result -->
     <rect x="280" y="300" width="320" height="40" rx="6" fill="#fff" stroke="#888"/>
-    <text x="440" y="324" text-anchor="middle" font-weight="700">MCP クライアントは RO 15 tools のみ確認 (+OUTBOX 2 if PM_DESKTOP_WRITE=1)</text>
+    <text x="440" y="324" text-anchor="middle" font-weight="700">MCP クライアントは RO 16 tools のみ確認 (+OUTBOX-RW 2 if PM_DESKTOP_WRITE=1)</text>
 
     <line x1="260" y1="270" x2="400" y2="300" stroke="#888" stroke-width="1" marker-end="url(#arrow2)"/>
     <line x1="620" y1="270" x2="480" y2="300" stroke="#dc2626" stroke-width="1" marker-end="url(#redarrow)"/>
@@ -634,7 +634,7 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
     <tr><th></th><th>PyPI <code>pmlens</code></th><th>.mcpb bundle (Lens)</th><th>.mcpb + PM_DESKTOP_WRITE</th></tr>
     <tr><td><strong>対象 host</strong></td><td>Claude Code (CLI) / Codex CLI</td><td>Claude Cowork / その他 viewer</td><td>Claude Desktop (Phase 2 bridge)</td></tr>
     <tr><td><strong>インストール</strong></td><td><code>pipx install pmlens</code> &rarr; <code>pmlens install</code></td><td>.mcpb ファイルを host に drag &amp; drop</td><td>.mcpb + manifest が <code>PM_DESKTOP_WRITE=1</code> を auto-propagate (PMSERV-100)</td></tr>
-    <tr><td><strong>登録 tools</strong></td><td>Full RW (44 tools)</td><td>Lens RO (15 tools)</td><td>RO 15 + OUTBOX-RW 2 = 17 tools</td></tr>
+    <tr><td><strong>登録 tools</strong></td><td>Full RW (44 tools)</td><td>Lens RO (16 tools)</td><td>RO 16 + OUTBOX-RW 2 = 18 tools</td></tr>
     <tr><td><strong>環境変数</strong></td><td>未設定</td><td><code>PM_LENS=1</code></td><td><code>PM_LENS=1, PM_DESKTOP_WRITE=1</code></td></tr>
     <tr><td><strong>SQLite モード</strong></td><td>RW main + outbox</td><td><code>?mode=ro&amp;immutable=1</code> main / outbox 不触</td><td>main は RO 不変、outbox <code>~/.pm/desktop/desktop.db</code> は append-only RW</td></tr>
     <tr><td><strong>同一バイナリ?</strong></td><td>はい — 配布物は 1 種類、env で role gating</td><td colspan="2" style="text-align:center">←</td></tr>
@@ -754,7 +754,7 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
 </section>
 
 <footer style="text-align: center; color: var(--muted); font-size: 12px; margin: 24px 0;">
-  Generated 2026-06-15, counts refreshed 2026-08-01 · PM Lens v0.15.0 · Phase 2 Desktop Outbox (ADR-019) shipped · 1,528 tests · 44 MCP tools
+  Generated 2026-06-15, counts refreshed 2026-08-06 · PM Lens v0.15.0 · Phase 2 Desktop Outbox (ADR-019) shipped · 1,528 tests · 44 MCP tools
 </footer>
 
 </main>
