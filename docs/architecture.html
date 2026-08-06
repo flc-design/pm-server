@@ -633,7 +633,7 @@ header.hero .subtitle { color: var(--muted); margin-top: 4px; }
   <table>
     <tr><th></th><th>PyPI <code>pmlens</code></th><th>.mcpb bundle (Lens)</th><th>.mcpb + PM_DESKTOP_WRITE</th></tr>
     <tr><td><strong>対象 host</strong></td><td>Claude Code (CLI) / Codex CLI</td><td>Claude Cowork / その他 viewer</td><td>Claude Desktop (Phase 2 bridge)</td></tr>
-    <tr><td><strong>インストール</strong></td><td><code>pip install pm-server</code> &rarr; <code>pmlens install</code></td><td>.mcpb ファイルを host に drag &amp; drop</td><td>.mcpb + manifest が <code>PM_DESKTOP_WRITE=1</code> を auto-propagate (PMSERV-100)</td></tr>
+    <tr><td><strong>インストール</strong></td><td><code>pipx install pmlens</code> &rarr; <code>pmlens install</code></td><td>.mcpb ファイルを host に drag &amp; drop</td><td>.mcpb + manifest が <code>PM_DESKTOP_WRITE=1</code> を auto-propagate (PMSERV-100)</td></tr>
     <tr><td><strong>登録 tools</strong></td><td>Full RW (44 tools)</td><td>Lens RO (15 tools)</td><td>RO 15 + OUTBOX-RW 2 = 17 tools</td></tr>
     <tr><td><strong>環境変数</strong></td><td>未設定</td><td><code>PM_LENS=1</code></td><td><code>PM_LENS=1, PM_DESKTOP_WRITE=1</code></td></tr>
     <tr><td><strong>SQLite モード</strong></td><td>RW main + outbox</td><td><code>?mode=ro&amp;immutable=1</code> main / outbox 不触</td><td>main は RO 不変、outbox <code>~/.pm/desktop/desktop.db</code> は append-only RW</td></tr>

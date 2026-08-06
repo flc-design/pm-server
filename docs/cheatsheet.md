@@ -8,7 +8,7 @@
 ## Quick Start
 
 ```bash
-pip install pm-server
+pipx install pmlens
 pmlens install          # Register MCP server in Claude Code
 ```
 
@@ -393,8 +393,8 @@ pm_status()["diagnostics"]["utils_fingerprint"]
 ```
 
 If `stale: true`, the loaded code differs from the file on disk — restart
-the server. Wheel installs (`pip install pm-server` from PyPI) are
-unaffected because the source is immutable until the next `pip install -U`.
+the server. Wheel installs (`pipx install pmlens` / `pip install pmlens` from
+PyPI) are unaffected because the source is immutable until the next upgrade.
 See PMSERV-060 for the originating incident.
 
 ---

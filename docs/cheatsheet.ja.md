@@ -8,7 +8,7 @@
 ## クイックスタート
 
 ```bash
-pip install pm-server
+pipx install pmlens
 pmlens install          # Claude Code に MCP サーバーを登録
 ```
 
@@ -395,8 +395,8 @@ pm_status()["diagnostics"]["utils_fingerprint"]
 ```
 
 `stale: true` のときはディスクとメモリが乖離しているサイン。サーバを
-再起動する。Wheel install (`pip install pm-server` from PyPI) では
-ソースが immutable なので発生しない (次回 `pip install -U` まで)。
+再起動する。Wheel install (`pipx install pmlens` / `pip install pmlens` from
+PyPI) ではソースが immutable なので発生しない (次回のアップグレードまで)。
 原因の詳細は PMSERV-060 参照。
 
 ---

@@ -55,7 +55,7 @@
 ### インストール（初回のみ）
 
 ```bash
-pip install pm-server
+pipx install pmlens
 pmlens install       # Claude Code に MCP サーバーを登録
 # Claude Code を再起動
 ```
@@ -63,11 +63,14 @@ pmlens install       # Claude Code に MCP サーバーを登録
 ### アップデート
 
 ```bash
-pip install --upgrade pm-server
+pipx upgrade pmlens
 # Claude Code を再起動
 ```
 
-> **注意:** `pip install pm-server`（`--upgrade` なし）では既存バージョンは更新されません。最新版にするには必ず `--upgrade`（または `-U`）を付けてください。
+> **注意:** `pmlens` はコマンドラインツールなので `pipx` を推奨します。専用の隔離環境に入るうえ、
+> Homebrew や Debian / Ubuntu の Python では virtualenv 外の `pip install` がそもそも拒否されます
+> （PEP 668、`error: externally-managed-environment`）。virtualenv の中であれば
+> `pip install pmlens` / `pip install -U pmlens` でも同じように動きます。
 
 アップグレード後、各プロジェクトの CLAUDE.md 自動行動ルールは自動的に更新されます:
 
@@ -632,7 +635,7 @@ Claude Code はセッションが長くなるとコンテキストを自動圧�
 ### 推奨ワークフロー
 
 ```
-1. インストール＆登録      →  pip install pm-server && pmlens install
+1. インストール＆登録      →  pipx install pmlens && pmlens install
 2. Claude Code を起動      →  (インストール後に再起動)
 3. プロジェクト初期化      →  「PM初期化して」
 4. タスク追加              →  「タスク追加：ユーザー認証を実装」

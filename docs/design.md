@@ -41,7 +41,7 @@ Claude Code の MCP Server として動作する PM Lens。
 **ワンコマンドインストール、ゼロ設定で動く。**
 
 ```
-$ pip install pm-server
+$ pipx install pmlens
 $ pmlens install     ← Claude Code MCP 設定を自動注入
 
 # Claude Code で
@@ -58,7 +58,7 @@ $ pmlens install     ← Claude Code MCP 設定を自動注入
 ### 2.1 インストール（1回だけ）
 
 ```bash
-pip install pm-server
+pipx install pmlens
 pmlens install
 ```
 

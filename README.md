@@ -55,7 +55,7 @@ Track tasks, visualize progress, record decisions — through natural language i
 ### Install (once)
 
 ```bash
-pip install pm-server
+pipx install pmlens
 pmlens install          # Registers MCP server in Claude Code
 # Restart Claude Code
 ```
@@ -63,11 +63,15 @@ pmlens install          # Registers MCP server in Claude Code
 ### Update
 
 ```bash
-pip install --upgrade pm-server
+pipx upgrade pmlens
 # Restart Claude Code
 ```
 
-> **Note:** `pip install pm-server` without `--upgrade` will NOT update an existing installation. Always use `--upgrade` (or `-U`) to get the latest version.
+> **Note:** `pipx` is recommended because `pmlens` is a command-line tool — it gets
+> its own isolated environment, and a plain `pip install` outside a virtualenv is
+> refused outright on Homebrew and Debian/Ubuntu Pythons (PEP 668,
+> `error: externally-managed-environment`). Inside a virtualenv, `pip install pmlens`
+> and `pip install -U pmlens` work the same way.
 
 After upgrading, the CLAUDE.md auto-action rules in each project are automatically updated:
 
@@ -634,7 +638,7 @@ Claude Code はセッションが長くなるとコンテキストを自動圧�
 ### Recommended Workflow
 
 ```
-1. Install & register      →  pip install pm-server && pmlens install
+1. Install & register      →  pipx install pmlens && pmlens install
 2. Start Claude Code       →  (restart after install)
 3. Initialize project      →  "PM初期化して" or "Initialize PM"
 4. Add tasks               →  "Add task: implement user auth"
