@@ -128,7 +128,9 @@ The announcement is still gated separately: `github-release` polls PyPI for
 already existing".
 
 `publish-wrapper.yml` still exists as the **rollback** and manual backfill, but
-no longer fires on a tag. See §6 before touching it.
+no longer fires on a tag — and since PMSERV-174 step 5 it can no longer publish
+at all until its PyPI publisher entry is re-added. See §4 and §6 before
+touching it.
 
 ---
 
@@ -152,6 +154,7 @@ no longer fires on a tag. See §6 before touching it.
 |---|---|
 | `build` › *Tag name must match the wrapper's version* | Skipped on dispatch — `github.ref_type` is not `tag`. |
 | `publish` › *Require pmlens on PyPI* | On this path nothing else orders the two uploads, so this poll is load-bearing. See §2. |
+| `publish` › *pypa/gh-action-pypi-publish* | Since 2026-08-06 there is **no `publish-wrapper.yml` publisher entry on PyPI** (§6 step 5), so the OIDC exchange fails here no matter how green everything above it is. Re-add the entry before using this workflow — §4. |
 
 ---
 
@@ -165,11 +168,22 @@ no longer fires on a tag. See §6 before touching it.
   `vX.Y.Z-wrapper.N`. Both workflows accept it (`${TAG#v}` then `%%-*` strips
   the suffix), the pmlens side no-ops on `skip-existing`, and `github-release`
   correctly skips it — its `if:` excludes any tag containing a hyphen.
+- **Rolling back to `publish-wrapper.yml` now takes two steps, not one.** Its
+  PyPI publisher entry was removed on 2026-08-06 (§6 step 5), so restoring
+  `push: tags: 'v*'` in the workflow is no longer sufficient — the OIDC exchange
+  fails with no matching publisher. **Re-add the entry on pypi.org first**
+  (`pm-server` → *Manage* → *Publishing*: `flc-design` / `pmlens` /
+  `publish-wrapper.yml` / `pypi`), *then* restore the trigger and re-tag. The
+  workflow file is deliberately kept in the repo for exactly this path — do not
+  delete it.
 - **`workflow_dispatch` on `publish-wrapper.yml`** is advertised as a backfill
-  path, but the `pypi` environment is understood to restrict deployments to
-  `v*` tags — a dispatch from `main` would build successfully and then be
-  rejected at the environment gate. Verify the environment's protection rules on
-  github.com before relying on it; otherwise use the `-wrapper.N` tag above.
+  path, but it now has two obstacles: the missing publisher entry above, and the
+  `pypi` environment restricting deployments to `v*` tags — a dispatch from
+  `main` builds successfully and is then rejected at the environment gate
+  (observed 2026-06-30: *Branch main is not allowed to deploy*). The 0.12.0
+  backfill worked around this by temporarily adding `main` to the environment
+  and removing it again afterwards. Clear both before relying on it; otherwise
+  use the `-wrapper.N` tag above.
 
 ---
 
@@ -198,7 +212,12 @@ The bindings, which must be kept in sync with the workflow filenames:
 |---|---|---|---|---|---|
 | `pmlens` | `flc-design` | `pmlens` | `release.yml` | `pypi` | live |
 | `pm-server` | `flc-design` | `pmlens` | `release.yml` | `pypi` | live since PMSERV-174 |
-| `pm-server` | `flc-design` | `pmlens` | `publish-wrapper.yml` | `pypi` | **rollback — keep until step 5** |
+| `pm-server` | `flc-design` | `pmlens` | `publish-wrapper.yml` | `pypi` | **removed 2026-08-06** (step 5) |
+
+Each PyPI project therefore has exactly **one** trusted publisher, `release.yml`
+— the target state of PMSERV-174. The third row is kept as a record rather than
+deleted, because `publish-wrapper.yml` is still in the repo and re-adding that
+entry is the first move in any rollback (§4).
 
 **Renaming or moving a workflow file breaks publishing**, because the workflow
 filename is part of the OIDC claim.
@@ -228,9 +247,9 @@ window in which the wrapper is unpublishable.
    `workflow_dispatch:` only — this removes the second automatic run and the
    second approval while preserving a manual recovery path. **Do not delete the
    file.**
-4. ⬜ **Pending.** Ship one real release through the merged workflow. Confirm on
-   pypi.org that **both** projects show the new version, and that the
-   provenance for **both** now names `release.yml`:
+4. ✅ **Done 2026-08-01, with v0.15.0.** Ship one real release through the merged
+   workflow. Confirm on pypi.org that **both** projects show the new version,
+   and that the provenance for **both** now names `release.yml`:
 
    ```bash
    curl -s https://pypi.org/integrity/pm-server/X.Y.Z/pm_server-X.Y.Z-py3-none-any.whl/provenance \
@@ -240,10 +259,20 @@ window in which the wrapper is unpublishable.
    Before PMSERV-174 that printed `publish-wrapper.yml`. Printing `release.yml`
    is the machine-checkable evidence that the merged path actually published,
    rather than a maintainer's impression that the approval felt like one click.
-5. ⬜ **Pending — only after step 4 succeeds.** Remove the
-   `publish-wrapper.yml` publisher entry on pypi.org.
+   For v0.15.0 both projects printed `release.yml`, on a single approval. The
+   `publish` job going green is *not* part of this evidence — `skip-existing:
+   true` makes it green whether or not anything was uploaded (§4).
+5. ✅ **Done 2026-08-06 — after step 4 succeeded.** Removed the
+   `publish-wrapper.yml` publisher entry on pypi.org. `publish-wrapper.yml`
+   itself stays in the repo, `workflow_dispatch`-only. **This is the change that
+   made rollback a two-step operation — see §4.**
 
-**Rollback**, if step 4 fails for OIDC reasons: restore `push: tags: 'v*'` in
-`publish-wrapper.yml` and re-tag. The old two-approval path works again
-unchanged, because its publisher entry was never removed — which is the entire
-reason step 5 comes last.
+**Rollback**, now that step 5 has run: re-add the `publish-wrapper.yml` publisher
+entry on pypi.org **first**, then restore `push: tags: 'v*'` in the workflow and
+re-tag. Two moves, not one — the workflow alone cannot authenticate.
+
+Until 2026-08-06 it *was* one move, because the entry had never been removed.
+That is the entire reason step 5 came last: sequencing the migration as
+add → verify → remove kept the cheap rollback available through the only window
+where it was likely to be needed, and paid for it afterwards with a rollback
+that is one step more expensive but no longer on the hot path.
